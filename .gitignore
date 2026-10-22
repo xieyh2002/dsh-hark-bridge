@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Package tarballs
+*.tgz
+*.tar.gz
+
+# Logs & temp files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local scratch scripts（临时验证脚本，不该进仓库）
+_*.mjs
+_probe/
+_ego/
+_review*/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,50 @@
+{
+  "name": "dsh-hark-bridge",
+  "version": "0.3.1",
+  "description": "让 DeepSeek Harness 把需求和代码交给 Hark：Hark 出方案 → DSH 派子代理实现 → 代码回 Hark 审查。通过 ego-browser 驱动你已登录的 ego 浏览器。",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "skills",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "index.js"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "hark",
+    "ego",
+    "ego-browser",
+    "ai-agent",
+    "code-review",
+    "browser-automation"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.2.0-rc.2"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node test/protocol.test.mjs && node test/plugin-wiring.test.mjs && node test/config-schema.test.mjs && node test/bridge-mock.test.mjs && node test/bridge-cancel.test.mjs",
+    "test:e2e": "node test/e2e-live.mjs"
+  }
+}
