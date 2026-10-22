@@ -38,7 +38,8 @@ function stuckEgo(state = { typed: '', calls: 0 }) {
           e.name = 'AbortError';
           throw e;
         }
-        yield { ok: true, phase: 'poll', text: `导航栏\n${state.typed}\n` };
+        // 页面在（pageLen > 0），请求也发出去了，只是尾部还没有回复。
+        yield { ok: true, phase: 'poll', sent: true, text: '', pageLen: 120 };
         await sleep(20);
       }
     },

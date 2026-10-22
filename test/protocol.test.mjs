@@ -60,10 +60,18 @@ const inline = `${msg}\n你消息结尾的 ${footTag(id)} 我看到了，方案�
 assert.equal(extractReply(inline, id).status, 'pending');
 const inline2 = `${msg}\n结束标记写法是 ${endTag(id)} 这样\n继续写`;
 assert.equal(extractReply(inline2, id).status, 'pending');
-// 行内引用之后正常单独成行结束
+// `[/DSH#id]` 不再是结束标记：它可能是 Hark 在正文里引用请求，
+// 拿它当结束会把后半截回复丢掉、却交给上游一个“完整结论”（审查意见 B1）。
 const r5 = extractReply(`${inline}\n${footTag(id)}`, id);
-assert.equal(r5.status, 'done');
+assert.equal(r5.status, 'pending', 'footTag 不能当结束标记');
 assert.ok(r5.reply.includes('1. 拆分'));
+
+// 需要兼容只写 footTag 的旧对话时，显式开关打开才认。
+assert.equal(extractReply(`${msg}\n方案\n${footTag(id)}`, id).status, 'pending');
+assert.deepEqual(
+  extractReply(`${msg}\n方案\n${footTag(id)}`, id, { acceptFootFallback: true }),
+  { status: 'done', reply: '方案' },
+);
 
 // Markdown 把换行并成空格：标记跟在最后一句后面也要认
 const soft = extractReply(`${msg}\n方案如下：拆两个模块 ${endTag(id)}\n输入框`, id);
@@ -71,5 +79,29 @@ assert.deepEqual(soft, { status: 'done', reply: '方案如下：拆两个模块'
 
 // 单独成行允许前后空白、CRLF
 assert.equal(extractReply(`${msg}\r\n好的\r\n   ${endTag(id)}  \r\n`, id).status, 'done');
+
+// --- B1 回归：结束标记只认行尾的 endTag，绝不把它当成"截断点"之外的东西 ---
+
+// 正文中间出现 footTag 不该截断
+assert.equal(
+  extractReply(`${msg}\n第一段\n${footTag(id)} 这样写是不对的\n第二段\n${endTag(id)}`, id).reply,
+  `第一段\n${footTag(id)} 这样写是不对的\n第二段`,
+);
+
+// 正文里引用 endTag（后面还有字）不算结束
+assert.equal(
+  extractReply(`${msg}\n写法是 ${endTag(id)} 这样\n继续\n${endTag(id)}`, id).reply,
+  `写法是 ${endTag(id)} 这样\n继续`,
+);
+
+// 多个 endTag 取最后一个（前面的可能被后续正文破坏）
+assert.equal(
+  extractReply(`${msg}\n第一段\n${endTag(id)}\n第二段\n${endTag(id)}`, id).reply,
+  `第一段\n${endTag(id)}\n第二段`,
+);
+
+// 页面被渲染成"以请求开头但被截断"的引用预览：能看到请求却定位不到回复区间，
+// 这是还在生成，不是没发出。
+assert.equal(extractReply(`${msg}\n${startTag(id)} chat\n（截断）`, id).status, 'pending');
 
 console.log('protocol tests passed');

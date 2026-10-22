@@ -27,6 +27,13 @@ function messageOf(script) {
   return m ? JSON.parse(m[1]) : '';
 }
 
+/**
+ * 假 ego：按真实脚本的约定回传尾部文本。
+ *
+ * 真实脚本只 emit `{phase:'poll', sent:true, text: <footTag 之后的页面文本>}`
+ * （审查意见 B3：整页 innerText 随对话增长会变成 O(n²) 回传）。
+ * 页面被渲染成「能看到请求、还没有回复」时 tail 就是请求之后那点空白。
+ */
 function makeFakeEgo({ replyAfterPolls = 2, reply = '方案：\n1. 加 /export 命令', neverReplies = false } = {}) {
   const state = { typed: '', calls: 0, all: [] };
   const streamScript = async function* (script, { signal } = {}) {
@@ -35,6 +42,7 @@ function makeFakeEgo({ replyAfterPolls = 2, reply = '方案：\n1. 加 /export �
     state.all.push(state.typed);
     const id = (state.typed.match(/\[DSH#([a-z0-9]+)\]/) || [])[1];
     assert.ok(id, '发出去的消息里要带请求 id');
+    const foot = footTag(id);
     yield { ok: true, phase: 'open' };
     yield { ok: true, phase: 'sent' };
     for (let i = 0; i < 20; i++) {
@@ -43,9 +51,12 @@ function makeFakeEgo({ replyAfterPolls = 2, reply = '方案：\n1. 加 /export �
         e.name = 'AbortError';
         throw e;
       }
-      const head = `导航栏\n${state.typed}\n`;
-      const body = !neverReplies && i >= replyAfterPolls ? `${reply}\n${endTag(id)}` : '';
-      yield { ok: true, phase: 'poll', text: head + body };
+      // 完整页面长这样（导航栏在前，然后是我们的请求，之后是 Hark 的回复）
+      const page = `导航栏\n${state.typed}\n${!neverReplies && i >= replyAfterPolls ? `${reply}\n${endTag(id)}` : ''}`;
+      const at = page.indexOf(foot);
+      yield at < 0
+        ? { ok: true, phase: 'poll', sent: false }
+        : { ok: true, phase: 'poll', sent: true, text: page.slice(at + foot.length) };
       await sleep(20);
     }
   };

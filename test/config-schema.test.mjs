@@ -37,12 +37,21 @@ assert.equal(v({ timeoutMin: 'bad' }).timeoutMin, DEFAULT_CONFIG.timeoutMin, '�
 assert.equal(v({ harkUrl: '' }).harkUrl, '', '空字符串保留（空是 harkUrl 的合法状态）');
 assert.equal(v(undefined).maxChars, DEFAULT_CONFIG.maxChars, 'undefined 输入给全默认值');
 assert.equal(v(null).pollMs, DEFAULT_CONFIG.pollMs, 'null 输入给全默认值');
-assert.equal(v({ pollMs: 3.7 }).pollMs, 3, '小数要截断成整数');
+assert.equal(v({ pollMs: 3.7 }).pollMs, 200, '先截断成整数，再夹到字段下限');
+assert.equal(v({ pollMs: 1000.9 }).pollMs, 1000, '小数要截断成整数');
+assert.equal(v({ pollMs: 0 }).pollMs, 200, 'pollMs 有下限，0 会不停读页面');
+assert.equal(v({ pollMs: 999999999 }).pollMs, 30000, 'pollMs 有上限');
+assert.equal(v({ timeoutMin: 100000 }).timeoutMin, 120, 'timeoutMin 有上限，别让一次调用卡到天荒地老');
+assert.equal(v({ timeoutMin: 0 }).timeoutMin, 1, 'timeoutMin 至少 1 分钟');
+assert.equal(v({ maxChars: 1 }).maxChars, 1000, 'maxChars 有下限');
+assert.equal(v({ settleMs: -1 }).settleMs, DEFAULT_CONFIG.settleMs, '负数仍然退回默认');
+assert.equal(v({ settleMs: 0 }).settleMs, 0, 'settleMs 允许 0（下限就是 0）');
 assert.equal(v({}).harkUrl, '', '缺省项要补齐，不能只剩用户写了的那几个');
 
 // --- 兜底实现的字段节点也要像样，面板才排得出表单 ---
 assert.equal(fb.dict.timeoutMin.type, 'number');
-assert.equal(fb.dict.timeoutMin.meta.min, 0);
+assert.equal(fb.dict.timeoutMin.meta.min, 1);
+assert.equal(fb.dict.timeoutMin.meta.max, 120);
 assert.equal(fb.dict.triggerWords.type, 'array');
 assert.equal(fb.dict.triggerWords.inner.type, 'string');
 assert.equal(fb.dict.harkUrl.type, 'string');
