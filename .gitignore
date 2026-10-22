@@ -18,6 +18,9 @@ _probe/
 _ego/
 _review*/
 
+# 插件运行时产物：Hark 的回复落盘目录（默认 <工作区>/.hark/replies）
+.hark/
+
 # OS metadata
 .DS_Store
 Thumbs.db

@@ -57,12 +57,32 @@ lib/protocol.js 里的消息格式和结束标记规则也不要改，Hark 已�
 
 | 名称 | 类型 | 说明 |
 | :-- | :-- | :-- |
-| `ask_hark` | 模型工具 | 你的话里出现触发词（默认：`hark`、`问 Hark`、`让 Hark`、`交给 Hark`、`@hark`）时 DSH 自动调用。参数 `mode`（plan / review / chat）、`analysis`（DSH 自己对需求的分析）、`context`（相关代码）、`questions`（要 Hark 拍板的点） |
+| `ask_hark` | 模型工具 | 你的话里出现触发词（默认：`hark`、`问 Hark`、`让 Hark`、`交给 Hark`、`@hark`）时 DSH 自动调用。参数 `mode`（plan / review / chat）、`analysis`（DSH 自己对需求的分析）、`context`（相关代码）、`questions`（要 Hark 拍板的点）、`attachments`（要一起发过去的工作区文件） |
 | `/hark <内容>` | 命令 | 你直接问 Hark，回复显示在 DSH 里 |
 | `/hark-url <网址>` | 命令 | 设置或查看 Hark 对话页地址；不带参数就打印当前值和用法 |
 | `/hark-login` | 命令 | 把 Hark 页面切到前台，首次使用在里面登录一次 |
 
 工具定义会强制 DSH 先自己读项目、写分析，再把结果发给 Hark——避免它把你的原话原样甩过去。
+
+## 方案和审查都落成 Markdown 文件
+
+Hark 的回方案、审代码动辄几千上万字。塞进对话上下文有两个坏处：贵，而且过几轮就被挤没了。所以每次回复都会**同时写一份 Markdown 到工作区**：
+
+```text
+<工作区>/.hark/replies/2026-10-22-2143-plan-l46i4dbvk.md
+```
+
+文件带 YAML front matter（请求编号、模式、保存时间、发过哪些附件），正文是 Hark 回复的原文。DSH 拿到的只是「存到哪了 + 开头 1200 字预览」，要看细节自己去读文件。
+
+**双向传文件**：
+
+- **发给 Hark**：`ask_hark(..., attachments: ["docs/plan.md", "src/a.ts"])`。只接受工作区内的相对路径（绝对路径、越界、`.env` 这类敏感文件、超大小的会被拒并说明原因）。文件作为真正的附件上传，不是把内容粘在正文里——格式、行号、diff 都能保真。
+- **看细节有更省的路子**：Hark 回复里如果挂了 `.md` 附件，插件会把**文件本身**下载到同一个目录，命名 `<请求编号>.hark.md`。附件比气泡里的渲染文本更完整（气泡会把连续空行压掉）。但只有长回复才值得走这条路——见下一条。
+- **短回复不折腾文件**：一句「收到」「链路正常」直接读正文就好。回复不到 `markdownMinChars`（默认 1200 字符）、或虽然长但没有文档结构（标题/列表/代码块/表格至少两样）时，插件不滚页面、不找卡片，直接用气泡文本。否则为了两个字要花十几秒滚到底、点开弹窗、下载，而且 Hark 短回复时压根不生成卡片，会翻到别人的卡片上去。
+
+传不上去时不会静默丢文件：附件上传超时会**自动降级**成把文件内容贴进正文（并在返回值里注明），实在太大降不了就明确报错。
+
+> 目录和开关都能改：`saveReplies` 关掉落盘、`replyDir` 换目录（必须在工作区内）。
 
 ## 环境要求
 
@@ -193,6 +213,17 @@ Hark 回一句「规则已收到」就算握手完成，记在 `settings.json` �
 | `pollMs` | 2000（200–30000） | 轮询页面文本的间隔毫秒 |
 | `settleMs` | 3000（0–30000） | 看到结束标记后再等多久，让流式输出稳定下来 |
 | `maxChars` | 60000（1000–400000） | 单条消息字符上限，超了会被拒，请拆开发 |
+| `saveReplies` | `true` | 把回复同时存成 Markdown 文件 |
+| `replyDir` | 空（用 `.hark/replies`） | 回复保存目录，必须在工作区内 |
+| `fetchAttachment` | `true` | Hark 附带 `.md` 时下载文件本身（内容比气泡文本完整） |
+| `markdownMinChars` | 1200（0–200000） | 回复超过这么多字符才去拿文件；一句话的回答直接用正文。设 0 表示总是拿文件 |
+| `attachTimeoutSec` | 60（5–300） | 等附件上传就绪的秒数 |
+| `fileInputSelector` | 自动识别 | 上传用的 file input 选择器 |
+| `attachmentSelector` | 自动识别 | 识别「Hark 附了 .md」的卡片选择器 |
+| `maxFileBytes` | 2 MB（1 KB–64 MB） | 单个附件上限 |
+| `maxTotalBytes` | 10 MB（1 KB–256 MB） | 一次请求的附件总量上限 |
+| `maxFiles` | 20（1–100） | 一次最多几个附件 |
+| `autoAttachOverflow` | `true` | 正文超 `maxChars` 时自动把内容转成附件发 |
 
 数值项都有上下界：手改 `settings.json` 写进 `"timeoutMin": "あ"` 这种内容时会被夹回合法值。否则 `timeoutMin * 60000` 是 `NaN`，定时器永远不触发，请求会挂死。
 
@@ -231,13 +262,13 @@ DSH ──ask──▶ HarkBridge ──spawn──▶ ego-browser nodejs ──
 ## 开发与测试
 
 ```bash
-npm test          # 七个单测，不需要浏览器，秒级跑完
+npm test          # 十个单测，不需要浏览器，秒级跑完
 npm run test:e2e  # 真实链路：起一个假 Hark 页面，用真 ego 走一遍完整流程
 ```
 
-`npm test` 覆盖：协议拼装与结束标记识别（含 `[/DSH#id]` 不能当结束、正文引用标记、重复渲染、多标记取最后一个）、插件 wiring（`inject` 必须是数组，cordis 4.x 的坑）、配置 schema 兜底与数值夹取、ego 驱动层（事件实时性、跨 UTF-8 边界、取消、脚本自毁、陈旧临时目录清理）、跨进程锁与排队取消、握手逻辑（首次发 / 只发一次 / 换地址重发 / 失败不阻断 / 规则文本不撞标记）、取消与超时语义。
+`npm test` 覆盖：协议拼装与结束标记识别（含 `[/DSH#id]` 不能当结束、正文引用标记、重复渲染、多标记取最后一个）、插件 wiring（`inject` 必须是数组，cordis 4.x 的坑）、配置 schema 兜底与数值夹取、ego 驱动层（事件实时性、跨 UTF-8 边界、取消、脚本自毁、陈旧临时目录清理）、跨进程锁与排队取消、附件校验（越界、敏感文件、去重、超限）、回复落盘（同名加后缀、front matter、中文路径）、握手逻辑（首次发 / 只发一次 / 换地址重发 / 失败不阻断 / 规则文本不撞标记）、取消与超时语义、工具层接线（落盘路径、预览截断、越界降级、短回复不落盘、`/hark` 命令同样落盘）、文件通道门控（长文档才下载，一句话直接读正文）。
 
-`npm run test:e2e` 会在你的 ego 里临时开一个标签页（`http://127.0.0.1:18941` 的假 Hark 页面），15 项断言，约 12 秒，跑完自己关掉。用的是你真在跑的 ego，所以能看到标签页一闪而过。
+`npm run test:e2e` 会在你的 ego 里临时开一个标签页（`http://127.0.0.1:18941` 的假 Hark 页面），19 项断言，约 25 秒，跑完自己关掉。用的是你真在跑的 ego，所以能看到标签页一闪而过。
 
 两个测试都会把 `DSH_HARK_BRIDGE_HOME` 指向临时目录，不会污染你真实的 `settings.json`。
 
@@ -245,9 +276,11 @@ npm run test:e2e  # 真实链路：起一个假 Hark 页面，用真 ego 走一�
 
 ```text
 lib/index.js         插件入口：注册 ask_hark 工具与 /hark* 命令
-lib/bridge.js        HarkBridge：排队、握手、发消息、等回复、错误语义
+lib/bridge.js        HarkBridge：排队、握手、发消息、等回复、上传附件、下载附件
 lib/protocol.js      消息格式、结束标记、extractReply
 lib/ego.js           浏览器驱动层：找 ego-browser、跑脚本、收事件
+lib/attach.js        上行：校验工作区路径、暂存、命名、超限处理
+lib/reply-store.js   下行：回复落盘（目录解析、文件名、front matter）
 lib/config-schema.js 配置 schema（schemastery，加载不到会退回内置实现）
 lib/store.js         用户级覆盖层（/hark-url 与握手记录）
 skills/hark-collab/  推荐给 DSH 的协作流程
