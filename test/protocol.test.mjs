@@ -44,4 +44,32 @@ assert.equal(extractReply(`${msg}\n第一段\n\n\n\n第二段\n${endTag(id)}`, i
 // 行尾空白被清掉
 assert.equal(extractReply(`${msg}\n第一段   \n第二段\t\n${endTag(id)}`, id).reply, '第一段\n第二段');
 
+// 空回复不算完成：发送瞬间请求被渲染两次（输入框 + 气泡）
+const dup = `${msg}\n${msg}\n`;
+assert.deepEqual(extractReply(dup, id), { status: 'pending', reply: '' });
+assert.equal(extractReply(`${msg}\n${msg.slice(0, 20)}`, id).status, 'pending');
+assert.equal(extractReply(`${msg}\n\n${footTag(id)}\n`, id).status, 'pending');
+// 双份渲染后 Hark 真正回复完，仍能拿到正文
+const dupDone = `${msg}\n${msg}\n方案A\n${endTag(id)}`;
+const rd = extractReply(dupDone, id);
+assert.equal(rd.status, 'done');
+assert.equal(rd.reply, '方案A');
+
+// 标记出现在行内（正文里引用）不算结束
+const inline = `${msg}\n你消息结尾的 ${footTag(id)} 我看到了，方案如下：\n1. 拆分`;
+assert.equal(extractReply(inline, id).status, 'pending');
+const inline2 = `${msg}\n结束标记写法是 ${endTag(id)} 这样\n继续写`;
+assert.equal(extractReply(inline2, id).status, 'pending');
+// 行内引用之后正常单独成行结束
+const r5 = extractReply(`${inline}\n${footTag(id)}`, id);
+assert.equal(r5.status, 'done');
+assert.ok(r5.reply.includes('1. 拆分'));
+
+// Markdown 把换行并成空格：标记跟在最后一句后面也要认
+const soft = extractReply(`${msg}\n方案如下：拆两个模块 ${endTag(id)}\n输入框`, id);
+assert.deepEqual(soft, { status: 'done', reply: '方案如下：拆两个模块' });
+
+// 单独成行允许前后空白、CRLF
+assert.equal(extractReply(`${msg}\r\n好的\r\n   ${endTag(id)}  \r\n`, id).status, 'done');
+
 console.log('protocol tests passed');
