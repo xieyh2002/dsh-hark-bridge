@@ -32,12 +32,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AokoX/dsh-hark-bridge.git"
+    "url": "git+https://github.com/xieyh2002/dsh-hark-bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/AokoX/dsh-hark-bridge/issues"
+    "url": "https://github.com/xieyh2002/dsh-hark-bridge/issues"
   },
-  "homepage": "https://github.com/AokoX/dsh-hark-bridge#readme",
+  "homepage": "https://github.com/xieyh2002/dsh-hark-bridge#readme",
   "engines": {
     "node": ">=20"
   },

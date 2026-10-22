@@ -74,7 +74,7 @@ lib/protocol.js 里的消息格式和结束标记规则也不要改，Hark 已�
 ## 安装
 
 ```bash
-git clone https://github.com/AokoX/dsh-hark-bridge.git
+git clone https://github.com/xieyh2002/dsh-hark-bridge.git
 cd dsh-hark-bridge
 npm install
 ```
