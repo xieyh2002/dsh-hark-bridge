@@ -136,13 +136,18 @@ while (true) {
     count += 1;
     own = ev.dir;
     if (count === 3) {
-      // 模拟父进程崩溃后 temp 被清理：脚本应自己发现并退出。
-      rmSync(own, { recursive: true, force: true });
+      // 模拟父进程崩溃后没人管它了。两条自毁信号都发：写 stop 文件（脚本一定看得到），
+      // 再尽量把目录删掉。Windows 上事件文件还被脚本开着，rmSync 会 ENOTEMPTY，
+      // 所以删除是尽力而为——stop 文件已足够验证自毁。
+      writeFileSync(join(own, 'stop'), '');
+      try {
+        rmSync(own, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+      } catch { /* 文件句柄还开着，删不掉不影响这条断言 */ }
     }
   }
   const cost = Date.now() - t0;
-  assert.ok(cost < 10_000, `目录消失后脚本应自己退出，实际跑了 ${cost}ms`);
-  console.log(`ok   脚本自毁（目录消失后 ${cost}ms 内结束）`);
+  assert.ok(cost < 10_000, `收到自毁信号后脚本应自己退出，实际跑了 ${cost}ms`);
+  console.log(`ok   脚本自毁（收到 stop 后 ${cost}ms 内结束）`);
 }
 
 // ---- 7. 陈旧临时目录会被清理（只删命中前缀且超龄的） ----
