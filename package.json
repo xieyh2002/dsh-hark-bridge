@@ -1,6 +1,6 @@
 {
   "name": "dsh-hark-bridge",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "让 DeepSeek Harness 把需求和代码交给 Hark：Hark 出方案 → DSH 派子代理实现 → 代码回 Hark 审查。方案与审查以 Markdown 文件交付，支持双向传文件；通过 ego-browser 驱动你已登录的 ego 浏览器。",
   "license": "MIT",
   "type": "module",

@@ -18,9 +18,15 @@ const { formatDiagnosis } = await import('../lib/index.js');
 
 const byName = (rows, name) => rows.find((r) => r.name === name);
 
+// 注入了假 ego 路径：CI 机器上没装 ego，不注入的话「ego-browser」必然失败，
+// 后面所有页面锚点的用例都跑不到，等于这些逻辑在 CI 里从没被测过。
+const FAKE_EGO = '/fake/ego-browser';
+const egoFound = () => FAKE_EGO;
+const egoMissing = () => null;
+
 // ---- 1. 没设 harkUrl：只报到地址这一项，并给出设置命令 ----
 {
-  const b = new HarkBridge(() => ({}), { runScript: async () => { throw new Error('不该开浏览器'); } });
+  const b = new HarkBridge(() => ({}), { findEgo: egoFound, runScript: async () => { throw new Error('不该开浏览器'); } });
   const rows = await b.diagnose();
   const url = byName(rows, 'harkUrl');
   assert.equal(url.ok, false, '没地址必须报失败');
@@ -33,21 +39,21 @@ const byName = (rows, name) => rows.find((r) => r.name === name);
 {
   const b = new HarkBridge(
     () => ({ harkUrl: 'https://hark.example.com/p/1', browserPath: join(tmpdir(), 'no-such-ego.exe') }),
-    { runScript: async () => { throw new Error('不该开浏览器'); } },
+    { findEgo: egoMissing, runScript: async () => { throw new Error('不该开浏览器'); } },
   );
-  // findEgoBrowser 在 preferred 不存在时会去系统目录找；本机装了 ego 就会找到，
-  // 所以这一项只断言「字段齐全」，不断言真假。
   const rows = await b.diagnose();
   const ego = byName(rows, 'ego-browser');
-  assert.ok(ego, '必须有 ego 这一项');
+  assert.equal(ego.ok, false, '找不到 ego 必须报失败');
   assert.equal(typeof ego.detail, 'string');
-  if (!ego.ok) assert.ok(ego.hint.includes('browserPath'), '找不到时要提 browserPath');
-  console.log('ok   ego 一项带 detail，失败时给 browserPath 提示');
+  assert.ok(ego.hint.includes('browserPath'), '找不到时要提 browserPath');
+  assert.equal(byName(rows, '页面'), undefined, '没 ego 就不该尝试开浏览器');
+  console.log('ok   ego 找不到时报失败并提示 browserPath，且不再尝试开浏览器');
 }
 
 // ---- 3. 握手未完成：算「不算错」，但要说明下次会多花一轮 ----
 {
   const b = new HarkBridge(() => ({ harkUrl: 'https://hark.example.com/p/1' }), {
+    findEgo: egoFound,
     runScript: async () => ({ ok: true }),
   });
   const rows = await b.diagnose();
@@ -61,8 +67,13 @@ const byName = (rows, name) => rows.find((r) => r.name === name);
 {
   const dir = process.env.DSH_HARK_BRIDGE_HOME;
   const { writeFileSync } = await import('node:fs');
-  writeFileSync(join(dir, 'bridge.lock'), JSON.stringify({ pid: process.pid, token: 't', at: Date.now() }));
-  const b = new HarkBridge(() => ({ harkUrl: 'https://hark.example.com/p/1' }), {
+  const { createHash } = await import('node:crypto');
+  const url = 'https://hark.example.com/p/1';
+  // 锁名按地址分开，测试必须写同一个名字，否则自检读到的是别的文件。
+  const lockFile = join(dir, `bridge-${createHash('sha256').update(url).digest('hex').slice(0, 8)}.lock`);
+  writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 't', at: Date.now() }));
+  const b = new HarkBridge(() => ({ harkUrl: url }), {
+    findEgo: egoFound,
     runScript: async () => ({ ok: true }),
     lockDir: dir,
   });
@@ -70,12 +81,15 @@ const byName = (rows, name) => rows.find((r) => r.name === name);
   const lock = byName(rows, '锁');
   assert.equal(lock.ok, false, '被活着的人占着要报失败');
   assert.ok(lock.hint.includes('3 分钟'), '要说清什么时候会自动回收');
+  const { rmSync } = await import('node:fs');
+  rmSync(lockFile, { force: true });
   console.log('ok   锁被占用时报失败，并说明自动回收时机');
 }
 
 // ---- 5. 页面探测：锚点全命中时不报错 ----
 {
   const b = new HarkBridge(() => ({ harkUrl: 'https://hark.example.com/p/1' }), {
+    findEgo: egoFound,
     runScript: async () => ({
       ok: true,
       url: 'https://hark.example.com/p/1',
@@ -101,6 +115,7 @@ const byName = (rows, name) => rows.find((r) => r.name === name);
 // ---- 6. 页面探测：英文界面被误判时，detail 里要有 aria-label 原文 ----
 {
   const b = new HarkBridge(() => ({ harkUrl: 'https://hark.example.com/p/1' }), {
+    findEgo: egoFound,
     runScript: async () => ({
       ok: true,
       url: 'https://hark.example.com/p/1',
@@ -123,6 +138,7 @@ const byName = (rows, name) => rows.find((r) => r.name === name);
 // ---- 7. 页面打不开：不能把前面的结论一起吞掉 ----
 {
   const b = new HarkBridge(() => ({ harkUrl: 'https://hark.example.com/p/1' }), {
+    findEgo: egoFound,
     runScript: async () => { throw new Error('ego 调用失败：没有输出'); },
   });
   const rows = await b.diagnose();
