@@ -11,7 +11,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ReplyStoreError, resolveReplyDir, saveReply } from '../lib/reply-store.js';
+import { ReplyStoreError, renameDownloaded, resolveReplyDir, saveReply } from '../lib/reply-store.js';
 
 /** 每个用例一个干净的临时工作区，register 到 after 里统一清理 */
 function workspace(t) {
@@ -112,6 +112,100 @@ test('文件名形如 <YYYYMMDD-HHmmss>-<mode>-<id>.md', (t) => {
   assert.equal(out.rel, '20261022-204931-plan-abc123.md');
   assert.equal(out.abs, join(dir, out.rel));
   assert.equal(out.rel.includes('\\'), false, 'rel 必须是 POSIX 风格，不能带反斜杠');
+});
+
+// ---- 6b. 有标题时文件名用标题，不再是一串编号 ----
+test('正文有一级标题时，文件名用标题而不是请求编号', (t) => {
+  const root = workspace(t);
+  const dir = join(root, 'r');
+  const out = saveReply({
+    dir, id: 'abc123', mode: 'plan', now: NOW,
+    reply: '# 附件卡片只认本次回复\n\n- 下界改成结束标记\n',
+  });
+  assert.equal(out.rel, '20261022-204931-plan-附件卡片只认本次回复.md');
+});
+
+test('标题里的 Markdown 符号和文件名非法字符都清掉', (t) => {
+  const root = workspace(t);
+  const dir = join(root, 'r');
+  const out = saveReply({
+    dir, id: 'x', mode: 'review', now: NOW,
+    reply: '## 复审：`bridge.js` / **锁** 的问题？\n\n正文\n',
+  });
+  // 冒号、斜杠、反引号、星号都不能留在文件名里；中文和问号可以留（Windows 允许）
+  assert.equal(out.rel.includes(':'), false, `不能有冒号：${out.rel}`);
+  assert.equal(out.rel.includes('/'), false, `不能有斜杠：${out.rel}`);
+  assert.equal(out.rel.includes('`'), false, `不能有反引号：${out.rel}`);
+  assert.equal(out.rel.includes('*'), false, `不能有星号：${out.rel}`);
+  assert.ok(out.rel.includes('复审'), `标题主体要留住：${out.rel}`);
+});
+
+test('没有标题时退回请求编号（保持旧行为）', (t) => {
+  const root = workspace(t);
+  const dir = join(root, 'r');
+  const out = saveReply({ dir, id: 'abc123', mode: 'chat', reply: '收到，我看一下。\n', now: NOW });
+  assert.equal(out.rel, '20261022-204931-chat-abc123.md');
+});
+
+test('超长标题截断到 60 字符，不会撞上文件名长度上限', (t) => {
+  const root = workspace(t);
+  const dir = join(root, 'r');
+  const long = '一'.repeat(200);
+  const out = saveReply({ dir, id: 'x', mode: 'plan', reply: `# ${long}\n`, now: NOW });
+  const stem = out.rel.replace(/^\d{8}-\d{6}-plan-/, '').replace(/\.md$/, '');
+  assert.equal(stem.length, 60, `标题部分应截到 60：${stem.length}`);
+});
+
+// ---- 6c. 下载回来的附件改名 ----
+test('renameDownloaded 用卡片名，产出可读文件名', (t) => {
+  const root = workspace(t);
+  const dir = join(root, 'r');
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, 'g9g6f88rq.hark.md');
+  writeFileSync(tmp, '# 改进方案\n\n正文\n', 'utf8');
+
+  const out = renameDownloaded({ saved: tmp, name: 'dsh-hark-bridge-0.8-改进方案.md', mode: 'plan', now: NOW });
+  assert.equal(out.name, '20261022-204931-plan-dsh-hark-bridge-0.8-改进方案.md');
+  assert.equal(out.saved, join(dir, out.name));
+  assert.equal(existsSync(tmp), false, '旧名不该留下');
+  assert.ok(existsSync(out.saved));
+});
+
+test('renameDownloaded 拿不到卡片名时退回正文标题', (t) => {
+  const root = workspace(t);
+  const dir = join(root, 'r');
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, 'x.hark.md');
+  writeFileSync(tmp, '# 仓库审查意见\n\n- 阻断 1\n', 'utf8');
+  const out = renameDownloaded({ saved: tmp, name: '', mode: 'review', now: NOW });
+  assert.equal(out.name, '20261022-204931-review-仓库审查意见.md');
+});
+
+test('renameDownloaded 撞名时加序号，不覆盖已有文件', (t) => {
+  const root = workspace(t);
+  const dir = join(root, 'r');
+  mkdirSync(dir, { recursive: true });
+  const first = join(dir, 'a.hark.md');
+  writeFileSync(first, '# 方案\n', 'utf8');
+  const one = renameDownloaded({ saved: first, name: '方案.md', mode: 'plan', now: NOW });
+  assert.equal(one.name, '20261022-204931-plan-方案.md');
+
+  const second = join(dir, 'b.hark.md');
+  writeFileSync(second, '# 方案\n', 'utf8');
+  const two = renameDownloaded({ saved: second, name: '方案.md', mode: 'plan', now: NOW });
+  assert.equal(two.name, '20261022-204931-plan-方案-2.md', '第二个要加 -2，不能覆盖');
+  assert.equal(existsSync(one.saved), true, '第一个必须还在');
+});
+
+test('renameDownloaded 没有可用名字时原样返回，不丢文件', (t) => {
+  const root = workspace(t);
+  const dir = join(root, 'r');
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, 'keep.hark.md');
+  writeFileSync(tmp, '没有标题的纯文本\n', 'utf8');
+  const out = renameDownloaded({ saved: tmp, name: '', mode: 'chat', now: NOW });
+  assert.equal(out.saved, tmp, '算不出名字就不动它');
+  assert.ok(existsSync(tmp));
 });
 
 // ---- 7. savedAt 与 meta ----

@@ -7,7 +7,7 @@
  *  - 排队取消：用户按停时如果还要等前一个请求跑完才返回，界面会假死。
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -162,6 +162,50 @@ console.log('ok   释放即清理');
   assert.equal(existsSync(lockFile), true, 'token 不是自己的，release 不能删');
   rmSync(lockFile, { force: true });
   console.log('ok   只删自己的锁');
+}
+
+// ---- 8. 不同 Hark 地址互不排队（Hark 方案 T4） ----
+//
+// 锁保护的是「同一个对话框只有一个人在打字」。早先所有会话共用一个 bridge.lock，
+// 语义变成「整台机器只能有一个人用 Hark」：两个项目各连一个 Hark 页，
+// 明明互不相干却要排队，最长白等 2 分钟。
+{
+  const urlA = 'https://hark.test/p/a';
+  const urlB = 'https://hark.test/p/b';
+  const relA = await acquireLock(dir, undefined, urlA);
+  // A 还持着锁，B 必须立刻拿到——它们不是同一个对话框。
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(new Error('被 A 挡住了')), 2000);
+  let relB = null;
+  try {
+    relB = await acquireLock(dir, ac.signal, urlB);
+  } finally {
+    clearTimeout(timer);
+  }
+  assert.ok(relB, '不同地址必须能同时持锁');
+  // 而同一个地址仍然互斥：A 没放锁，A 自己也拿不到第二把。
+  const ac2 = new AbortController();
+  const t2 = setTimeout(() => ac2.abort(new Error('同地址应当互斥')), 400);
+  await assert.rejects(acquireLock(dir, ac2.signal, urlA), (e) => e.name === 'AbortError', '同一个地址必须互斥');
+  clearTimeout(t2);
+  relB();
+  relA();
+  console.log('ok   不同 Hark 地址互不排队，同地址仍然互斥');
+}
+
+// ---- 9. 锁文件名按地址区分，且不污染目录 ----
+{
+  // 前面的用例里还有一个永远不结束的请求持着它自己的锁，所以只看「新增了哪个」。
+  const before = new Set(readdirSync(dir));
+  const relA = await acquireLock(dir, undefined, 'https://hark.test/p/a');
+  const added = readdirSync(dir).filter((f) => f.endsWith('.lock') && !before.has(f));
+  assert.equal(added.length, 1, `应当新增一个锁文件，实际 ${added.join(',') || '无'}`);
+  assert.ok(/^bridge-[0-9a-f]{8}\.lock$/.test(added[0]), `锁名格式不对：${added[0]}`);
+  // 名字里不能出现网址片段（斜杠会把锁文件变成子目录，直接 ENOENT）。
+  assert.ok(!added[0].includes('hark.test'), '锁名不能带网址原文');
+  relA();
+  assert.equal(existsSync(join(dir, added[0])), false, '释放后自己的锁要删掉');
+  console.log('ok   锁文件名是 bridge-<hash>.lock，不含网址原文');
 }
 
 rmSync(dir, { recursive: true, force: true });

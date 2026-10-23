@@ -59,8 +59,9 @@ lib/protocol.js 里的消息格式和结束标记规则也不要改，Hark 已�
 | :-- | :-- | :-- |
 | `ask_hark` | 模型工具 | 你的话里出现触发词（默认：`hark`、`问 Hark`、`让 Hark`、`交给 Hark`、`@hark`）时 DSH 自动调用。参数 `mode`（plan / review / chat）、`analysis`（DSH 自己对需求的分析）、`context`（相关代码）、`questions`（要 Hark 拍板的点）、`attachments`（要一起发过去的工作区文件） |
 | `/hark <内容>` | 命令 | 你直接问 Hark，回复显示在 DSH 里 |
-| `/hark-url <网址>` | 命令 | 设置或查看 Hark 对话页地址；不带参数就打印当前值和用法 |
+| `/hark-url <网址>` | 命令 | 设置或查看 Hark 对话页地址；不带参数时如果 ego 里开着 Hark，会直接列出候选地址 |
 | `/hark-login` | 命令 | 把 Hark 页面切到前台，首次使用在里面登录一次 |
+| `/hark-diag` | 命令 | 自检：逐项检查 ego、地址、握手、锁和页面锚点，每项都给出下一步怎么办 |
 
 工具定义会强制 DSH 先自己读项目、写分析，再把结果发给 Hark——避免它把你的原话原样甩过去。
 
@@ -96,10 +97,14 @@ Hark 的回方案、审代码动辄几千上万字。塞进对话上下文有两
 | `<工作区>/.hark/attach/<编号>/` | 待上传文件的暂存 | 传完即删，崩溃残留超过 24 小时会被清掉 |
 | `<工作区>/.hark/settings.json` | 兜底的配置覆盖层 | 只在全局层写不进去时才出现 |
 | `%LOCALAPPDATA%\dsh-hark-bridge\settings.json` | harkUrl、握手记录 | 用户级偏好，换项目不用重设 |
-| `%LOCALAPPDATA%\dsh-hark-bridge\bridge.lock` | 跨进程互斥锁 | **故意放在工作区外**：它的作用是让不同工作区的会话不会同时往同一个 Hark 输入框打字，放进工作区就等于没有锁 |
+| `%LOCALAPPDATA%\dsh-hark-bridge\bridge-<hash>.lock` | 跨进程互斥锁 | **故意放在工作区外**：它的作用是让不同工作区的会话不会同时往同一个 Hark 输入框打字，放进工作区就等于没有锁 |
 | `%TEMP%\dsh-hark-ego-*` | ego 脚本与事件文件 | 平台临时区域，用完即删 |
 
-如果部署方只给工作区写权限（全局目录写不进去），配置覆盖层会自动落到 `<工作区>/.hark/settings.json`，读取时优先于全局层——功能不受影响，只是这份配置跟着项目走。锁文件是唯一的硬依赖：全局目录完全不可写时，跨工作区互斥会失效，这时多个工作区的会话可能同时给 Hark 发消息。
+如果部署方只给工作区写权限（全局目录写不进去），配置覆盖层会自动落到 `<工作区>/.hark/settings.json`，读取时优先于全局层——功能不受影响，只是这份配置跟着项目走。
+
+锁文件也一样会回落，顺序是：指定目录 → `%LOCALAPPDATA%` → `%TEMP%\dsh-hark-bridge` → `<工作区>/.hark`。每级都真的试写一次才采用，所以「目录存在但不可写」这种情况也能正确降级。落到最后一级时，跨工作区互斥会失效（两个不同项目仍可能同时给 Hark 发消息），但同一个项目内的并发照样挡住。
+
+锁按 Hark 地址分开（`bridge-<sha256(网址)前8位>.lock`）：连两个不同 Hark 项目的会话互不排队，因为它们的语义不是「整台机器只能有一个人用 Hark」，而是「同一个对话框只有一个人在打字」。
 
 ## 环境要求
 
@@ -125,17 +130,47 @@ npm install
 
 ## 首次使用
 
+先只输入 `/hark-url`（不带参数）。如果你本来就在 ego 里开着 Hark，插件会扫一遍已打开的标签页，把像 Hark 对话页的地址列出来让你挑：
+
+```text
+还没有设置 Hark 地址，但在 ego 里发现了这些 Hark 页面：
+  https://hark.com/project/xxxx（DSH 协作）
+
+如果是其中某一个，执行 /hark-url <上面那个完整地址> 采用它。
+```
+
+没有候选就手动设：
+
 ```text
 /hark-url https://hark.com/project/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
-地址从哪来：在 Hark 里建一个专门的项目（比如叫「DSH 协作」），打开对话页，复制浏览器地址栏的整条 URL。
+地址从哪来：在 Hark 里建一个专门的项目（比如叫「DSH 协作」），打开对话页，复制浏览器地址栏的整条 URL。**要确认复制的是对话页，不是项目列表页**——复制错的表现是「连上了但发消息没反应」，比没配更难查。
 
 ```text
 /hark-login
 ```
 
 Hark 页面会在你的 ego 里切到前台。没登录就在那儿登录一次——登录态就是你 ego 自己的登录态，插件不存任何密码或 cookie。
+
+```text
+/hark-diag
+```
+
+逐项自检，全绿就说明配置没问题。之后任何时候出问题，先跑它：
+
+```text
+✅ ego-browser：C:\Program Files\Citro Labs\ego lite\Application\0.6.0.16\ego-browser.exe
+✅ harkUrl：https://hark.com/project/xxxx（来源：/hark-url）
+•  握手：未握手或规则已升级（记录 v无，当前 v2）
+   → 下次请求会自动握手一次，多花一轮消息；不用手动做
+✅ 锁：没有别的会话在占用
+✅ 消息气泡：命中 6 个（[data-testid=message-bubble]）
+✅ 输入框：命中 1 个（textarea, [contenteditable="true"], …）
+✅ 发送按钮：aria-label="Send message"（界面语言 en）
+```
+
+每项后面都跟着「怎么办」。`•` 是「查到了但不构成错误」——比如还没握手、页面上暂时没有附件卡片。
 
 ```text
 /hark ping
@@ -214,7 +249,7 @@ Hark 回一句「规则已收到」就算握手完成，记在 `settings.json` �
 
 ## 配置
 
-`harkUrl` 用 `/hark-url` 设，值存在 `%LOCALAPPDATA%\dsh-hark-bridge\settings.json`（Linux/macOS 是 `~/.dsh-hark-bridge/settings.json`），优先级高于 cordis 配置。
+`harkUrl` 用 `/hark-url` 设，值存在 `%LOCALAPPDATA%\dsh-hark-bridge\settings.json`（Linux/macOS 是 `~/.dsh-hark-bridge/settings.json`）；全局层写不进去时落到 `<工作区>/.hark/settings.json`，读取时工作区层优先。两条路都优先于 cordis 配置。
 
 其余项改 `cordis.yml` 里本插件的 `config`（或者 `cordis.patch.yml`）：
 
@@ -269,8 +304,8 @@ DSH ──ask──▶ HarkBridge ──spawn──▶ ego-browser nodejs ──
 ## 已知限制
 
 - **强依赖 ego。** 见开头那段。换浏览器要改 `lib/ego.js`。
-- **靠读网页文字工作。** Hark 页面改版可能需要调 `inputSelector` / `sendSelector`。
-- **串行排队 + 跨进程锁。** 同一个页面不能两个请求同时打字，所以一次只发一条。多个 DSH 会话同时用会排队（锁文件 `<数据目录>/bridge.lock`；持锁期间每 60 秒写一次心跳，判断残留以持有者进程是否还活着为准，等待上限 2 分钟）。释放时只删自己的锁——早先无条件删，锁被接管后原进程会把别人的锁删掉，第三个会话就能挤进来。
+- **靠读网页文字工作。** 页面锚点集中在 `lib/selectors.js`，文案类锚点中英文双匹配，结构锚点优先用 `data-testid`。Hark 真改版时，先用 `/hark-diag` 看是哪一项失效，再用 `inputSelector` / `sendSelector` / `attachmentSelector` 临时绕过。
+- **串行排队 + 跨进程锁。** 同一个页面不能两个请求同时打字，所以一次只发一条。多个 DSH 会话同时用会排队（锁文件按 Hark 地址分开：`bridge-<hash>.lock`；持锁期间每 60 秒写一次心跳，判断残留看「持有者进程是否还活着」**或**「心跳是否停摆超过 3 个周期」——后者是为了防 Windows pid 复用导致的永久死锁；等待上限 2 分钟）。释放时只删自己的锁——早先无条件删，锁被接管后原进程会把别人的锁删掉，第三个会话就能挤进来。
 - **排队中也能取消。** 还没轮到就按停止，请求立刻结束，不会排在前面那个请求后面白等。
 - **超时不返回半截结论。** 默认 20 分钟，超了抛 `HarkTimeoutError`，错误里附上已收到的部分——但那可能被截断，不能当方案或审查通过的依据。需要更长回复就调大 `timeoutMin`，或者把需求拆小。
 - **页面丢了会早报。** 发出去之后整页文本变空超过 60 秒，会报「Hark 页面忽然读不到内容了」，而不是干等到 `timeoutMin`。
@@ -301,6 +336,7 @@ lib/attach.js        上行：校验工作区路径、暂存、命名、超限�
 lib/reply-store.js   下行：回复落盘（目录解析、文件名、front matter）
 lib/config-schema.js 配置 schema（schemastery，加载不到会退回内置实现）
 lib/store.js         用户级覆盖层（/hark-url 与握手记录）
+lib/selectors.js     页面锚点与文案（中英文双匹配，改版时只动这里）
 skills/hark-collab/  推荐给 DSH 的协作流程
 ```
 

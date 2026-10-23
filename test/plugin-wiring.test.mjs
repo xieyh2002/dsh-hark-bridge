@@ -41,7 +41,7 @@ assert.equal(tools.length, 1);
 assert.equal(tools[0].name, 'ask_hark');
 assert.ok(tools[0].description.includes('「交给 Hark」'));
 assert.ok(tools[0].parameters.analysis.required);
-assert.deepEqual(commands.map((c) => c.name).sort(), ['hark', 'hark-login', 'hark-url']);
+assert.deepEqual(commands.map((c) => c.name).sort(), ['hark', 'hark-diag', 'hark-login', 'hark-url']);
 
 // --- 宿主没有 commands：不能抛错，工具照旧可用 ---
 const tools2 = [];
