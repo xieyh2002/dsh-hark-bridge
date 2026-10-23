@@ -27,19 +27,36 @@ function idOf(script) {
  *
  * 第二个脚本调用（也就是握手之后的那次真实请求）返回 reply，之前的一律当作握手
  * 直接给一个 done，避免测试卡在握手预算上。
+ *
+ * attachment：模拟 Hark 附带 .md 卡片并成功下载（text 是文件内容）。
+ * mdCards：轮询时报的「本次请求名下的卡片数」，实现里据此决定要不要跑下载脚本。
  */
-function makeFake({ reply = '## 方案\n\n1. 先做 A', onScript } = {}) {
+function makeFake({ reply = '## 方案\n\n1. 先做 A', onScript, attachment = null, mdCards = 0 } = {}) {
   const state = { calls: 0, scripts: [] };
   async function* streamScript(script) {
     state.calls += 1;
     state.scripts.push(script);
+    // 下载脚本的标识是 saveAs（要存到哪儿）；ask 脚本里也有卡片表达式，不能拿来认。
+    if (script.includes('"saveAs"')) {
+      if (!attachment) throw new Error('测试没准备附件，不该跑下载脚本');
+      if (attachment.error) {
+        const e = new Error(attachment.error);
+        e.name = 'EgoStageError';
+        e.stage = 'attachment';
+        throw e;
+      }
+      yield { ok: true, phase: 'attachment', saved: attachment.saved, name: attachment.name };
+      return;
+    }
     onScript?.(script, state);
     const id = idOf(script);
     yield { ok: true, phase: 'open' };
     yield { ok: true, phase: 'sent' };
     // 和真实脚本一致：只回传 footTag 之后的部分，父进程自己补回锚点。
-    yield { ok: true, phase: 'poll', sent: true, text: `\n${reply}\n[[DSH-END#${id}]]` };
-    yield { ok: true, phase: 'poll', sent: true, same: true };
+    yield {
+      ok: true, phase: 'poll', sent: true, text: `\n${reply}\n[[DSH-END#${id}]]`, mdCards, anchored: true, mdTotal: mdCards,
+    };
+    yield { ok: true, phase: 'poll', sent: true, same: true, mdCards, anchored: true };
   }
   return { state, streamScript };
 }
@@ -170,6 +187,58 @@ const exec = { agent: { session: { header: { cwd: workspace } } } };
   assert.ok(out.includes('收到'), '正文仍要原样返回给模型');
   const after = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
   assert.equal(after, before, '短回复不该在 .hark/replies 里多出文件');
+}
+
+// --- 10. 附件原文与聊天正文并列（审查意见 N4） ---
+//
+// 早先是整段替换：Hark 给了文件就用文件顶掉聊天正文，于是「无法生成文件」
+// 这类说明、对面针对某个小问题的直接回答，全丢了。现在两份都给。
+{
+  const dir = path.join(workspace, '.hark', 'replies');
+  const attPath = path.join(sandbox, 'hark-att.md');
+  fs.writeFileSync(attPath, '# 完整审查\n\n- 阻断 1\n- 阻断 2\n', 'utf8');
+  const fake = makeFake({
+    reply: '审查结果见附件。另外提醒一句：改之前先跑一遍测试。',
+    mdCards: 1,
+    attachment: { saved: attPath, name: '仓库审查.md' },
+  });
+  const { ctx, tools } = makeCtx();
+  apply(ctx, { harkUrl: 'https://hark.example.com/p/1', settleMs: 0, markdownMinChars: 0 }, { bridge: { streamScript: fake.streamScript } });
+  const out = await tools[0].execute({ mode: 'review', user_request: '审查', analysis: '审整个仓库' }, exec);
+
+  assert.ok(out.includes('# 完整审查'), `返回值应带附件原文：${out.slice(0, 200)}`);
+  assert.ok(out.includes('先跑一遍测试'), '聊天正文里的额外信息不能丢');
+  assert.ok(out.includes('📎 Hark 附带的文件已下载（仓库审查.md）'), `应点名附件：${out}`);
+  // 落盘的文件里两份内容都在，且附件在前（正文是渲染后的，附件才是可加工的原文）
+  const files = fs.readdirSync(dir);
+  const saved = files.map((f) => path.join(dir, f)).filter((p) => fs.statSync(p).size > 0).pop();
+  const text = fs.readFileSync(saved, 'utf8');
+  const iAtt = text.indexOf('# 完整审查');
+  const iChat = text.indexOf('先跑一遍测试');
+  assert.ok(iAtt >= 0 && iChat > iAtt, '附件原文要在前，聊天正文附在后');
+}
+
+// --- 11. 只有附件、聊天正文没新信息时，不再存第二份（审查意见 N5） ---
+{
+  const dir = path.join(workspace, '.hark', 'replies');
+  const before = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
+  const attPath = path.join(sandbox, 'hark-only.md');
+  const body = '# 方案\n\n- 第一步\n';
+  fs.writeFileSync(attPath, body, 'utf8');
+  // 聊天正文就是附件内容本身：再存一份就是磁盘上两个几乎一样的 .md
+  const fake = makeFake({ reply: body, mdCards: 1, attachment: { saved: attPath, name: '方案.md' } });
+  const { ctx, tools } = makeCtx();
+  apply(ctx, { harkUrl: 'https://hark.example.com/p/1', settleMs: 0, markdownMinChars: 0 }, { bridge: { streamScript: fake.streamScript } });
+  const out = await tools[0].execute({ mode: 'plan', user_request: '方案', analysis: '实现' }, exec);
+
+  const after = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
+  assert.equal(after, before, '附件已经落盘，不该再复制一份到 replies');
+  assert.ok(out.includes(attPath), '路径要给出，模型才能读');
+  assert.equal(
+    (out.match(/已保存|已下载/g) || []).length,
+    1,
+    `同一份内容只说一次，别一个「已保存」一个「已下载」：${out}`,
+  );
 }
 
 // --- 7. resolveWorkspaceRoot：优先会话 cwd，取不到退回进程目录 ---

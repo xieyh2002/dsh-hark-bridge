@@ -5,7 +5,7 @@
  * （消息拼装、结束标记识别、握手、排队），不依赖任何浏览器。
  */
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -16,7 +16,7 @@ process.env.DSH_HARK_BRIDGE_HOME = TMP_HOME;
 
 const { HarkBridge } = await import('../lib/bridge.js');
 const { DEFAULT_CONFIG } = await import('../lib/config-schema.js');
-const { endTag, footTag, buildRulesBody } = await import('../lib/protocol.js');
+const { endTag, footTag, buildRulesBody, RULES_VERSION } = await import('../lib/protocol.js');
 const { readOverride } = await import('../lib/store.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -64,13 +64,24 @@ function makeFakeEgo({
   attach = 'ready',
   missing = [],
   download = null,
+  // 页面上「本次请求之后、Hark 回复里」的 md 卡片数。
+  // 这是现在唯一决定要不要下载的信号（审查意见 B3）：以前靠正文长度和
+  // Markdown 结构去猜，而 Hark 气泡显示的是渲染后的内容，猜中概率接近 0。
+  mdCards = 0,
+  // anchored：锚点（带请求编号的气泡）找没找到。真实实现里没锚点就一定不下载（N2）。
+  anchored = true,
+  mdTotal = 0,
+  // lateCardAt：第几轮 poll 之后卡片才出现（模拟卡片比文字晚渲染，审查意见 N3）。
+  // null 表示一直按 mdCards 给。
+  lateCardAt = null,
 } = {}) {
-  const state = { typed: '', calls: 0, all: [], scripts: [], staged: [] };
+  const state = { typed: '', calls: 0, all: [], scripts: [], staged: [], stagedContents: [] };
   const streamScript = async function* (script, { signal } = {}) {
     state.calls += 1;
     state.scripts.push(script);
-    // 下载脚本是第二个独立脚本（没有请求 id），先单独处理掉
-    if (script.includes('data-dsh-md')) {
+    // 下载脚本是第二个独立脚本：它唯一的特征是 C.saveAs（要存到哪儿），
+    // 不能再用 'data-dsh-md' 认——ask 脚本里也带这个表达式（每轮数卡片）。
+    if (script.includes('"saveAs"')) {
       if (!download) throw new Error('测试没给 download 行为，不该跑下载脚本');
       const ev = await download();
       if (ev?.error) {
@@ -84,7 +95,13 @@ function makeFakeEgo({
     }
     state.typed = messageOf(script);
     state.all.push(state.typed);
-    state.staged.push(stagedOf(script));
+    const nowStaged = stagedOf(script);
+    state.staged.push(nowStaged);
+    // 暂存目录在 ask 结束的 finally 里会被删掉，所以「附件里到底装了什么」必须
+    // 在这里就地读下来——等价于浏览器在上传那一刻真的读到了这些字节。
+    state.stagedContents.push(nowStaged.map((p) => {
+      try { return readFileSync(p, 'utf8'); } catch { return ''; }
+    }));
     const id = (state.typed.match(/\[DSH#([a-z0-9]+)\]/) || [])[1];
     assert.ok(id, '发出去的消息里要带请求 id');
     const foot = footTag(id);
@@ -111,9 +128,21 @@ function makeFakeEgo({
       // 完整页面长这样（导航栏在前，然后是我们的请求，之后是 Hark 的回复）
       const page = `导航栏\n${state.typed}\n${!neverReplies && i >= replyAfterPolls ? `${reply}\n${endTag(id)}` : ''}`;
       const at = page.indexOf(foot);
+      // mdTotal：页面上卡片总数；mdCards：能算进本次请求的数量。
+      // 真实实现里这两个数来自 DOM 位置比较，测试里直接给（anchored 有单独用例）。
+      // lateCardAt：卡片晚于文字出现——文字早就定稿了，卡片还在路上。
+      const cardsNow = lateCardAt !== null && i >= lateCardAt ? Math.max(mdCards, 1) : mdCards;
       yield at < 0
-        ? { ok: true, phase: 'poll', sent: false }
-        : { ok: true, phase: 'poll', sent: true, text: page.slice(at + foot.length) };
+        ? { ok: true, phase: 'poll', sent: false, mdCards: cardsNow, anchored: false, mdTotal }
+        : {
+          ok: true,
+          phase: 'poll',
+          sent: true,
+          text: page.slice(at + foot.length),
+          mdCards: cardsNow,
+          anchored,
+          mdTotal: mdTotal || cardsNow,
+        };
       await sleep(20);
     }
   };
@@ -122,7 +151,11 @@ function makeFakeEgo({
 }
 
 const URL1 = 'https://hark.example/p/1';
-const baseCfg = { ...DEFAULT_CONFIG, harkUrl: URL1, pollMs: 10, settleMs: 10 };
+// attachGraceMs 压到很小：真实默认是 8000（等 Hark 的文件卡片出现），
+// 但这里的假 ego 每 10ms 就推一次 poll、总共才推 20 次，按真实值永远等不到宽限期结束。
+const baseCfg = {
+  ...DEFAULT_CONFIG, harkUrl: URL1, pollMs: 10, settleMs: 10, attachGraceMs: 20,
+};
 
 // 1. 正常往返：首轮先握手，再发正式请求
 {
@@ -138,7 +171,9 @@ const baseCfg = { ...DEFAULT_CONFIG, harkUrl: URL1, pollMs: 10, settleMs: 10 };
   assert.ok(ego.state.all[1].includes('给插件加导出功能'), '第二次才是真正的正文');
   assert.ok(ego.state.all[1].includes('[DSH#'), '消息要带请求 id');
   assert.ok(!ego.state.all[1].includes(endTag('')), '消息里不能出现结束标记的空壳');
-  assert.equal(readOverride().handshakes?.[URL1], 1, '握手完成后要记下来');
+  // 记的是「规则版本号」而不是「做过没」：改了规则文本就把 RULES_VERSION 加 1，
+  // 老用户下次调用会自动补发一遍新规则。
+  assert.equal(readOverride().handshakes?.[URL1], RULES_VERSION, '握手完成后要按规则版本号记下来');
 }
 
 // 2. 握手只做一次：同一地址第二次 ask 不再重发规则
@@ -162,7 +197,7 @@ const baseCfg = { ...DEFAULT_CONFIG, harkUrl: URL1, pollMs: 10, settleMs: 10 };
   const bridge = new HarkBridge(() => ({ ...baseCfg, harkUrl: url3 }), ego);
   await bridge.ask('chat', '换个页面');
   assert.equal(ego.state.calls, 2, '新地址要重新握手');
-  assert.equal(readOverride().handshakes?.[url3], 1);
+  assert.equal(readOverride().handshakes?.[url3], RULES_VERSION);
 }
 
 // 4. 没有设置 harkUrl 时给出可操作的提示，而不是空指针
@@ -186,6 +221,50 @@ const baseCfg = { ...DEFAULT_CONFIG, harkUrl: URL1, pollMs: 10, settleMs: 10 };
     return true;
   });
   assert.equal(ego.state.calls, 0, '被拒的请求不该启动浏览器');
+}
+
+// 5b. 超长正文 + autoAttachOverflow：改成附件发，不能截断（审查意见 S4）
+//
+// 截断是最糟的选择：超长正文几乎都是 diff，Hark 拿到半份代码会基于缺失上下文给方案。
+// 所以这里既要不报错，也要保证正文一个字都没少——它得原样落在附件里。
+{
+  const ws = mkdtempSync(join(TMP_HOME, 'ws-'));
+  const ego = makeFakeEgo();
+  const long = 'diff --git a/x b/x\n' + '+ 这一行要原样到 Hark 手里\n'.repeat(20);
+  const bridge = new HarkBridge(
+    () => ({ ...baseCfg, harkUrl: 'https://hark.example/p/5b', maxChars: 200, autoAttachOverflow: true }),
+    ego,
+  );
+  const r = await bridge.ask('plan', long, { workspaceRoot: ws });
+  assert.equal(r.done, true, '转成附件后应当正常完成');
+  assert.ok(
+    (r.warnings || []).some((w) => /超过上限 200.*已改写成附件/.test(w)),
+    `要说明正文被转成了附件，实际 warnings=${JSON.stringify(r.warnings)}`,
+  );
+  // 附件真的挂上去了
+  const staged = ego.state.staged.at(-1) || [];
+  assert.equal(staged.length, 1, '应当有一个正文附件');
+  assert.match(staged[0], /正文-[a-z0-9]+\.md$/, `附件名应能看出是正文，实际 ${staged[0]}`);
+  const uploaded = (ego.state.stagedContents.at(-1) || [])[0];
+  assert.equal(uploaded, long, '附件里必须是完整正文，不能截断');
+  // 输入框里只剩一句指路话（消息本身还有协议头与附件清单，所以不按总长度断言，
+  // 只确认原始正文没有重复贴进来）
+  assert.ok(!ego.state.typed.includes('+ 这一行要原样到 Hark 手里'), '正文不该再重复贴进输入框');
+  assert.match(ego.state.typed, /完整内容已作为附件/, '要说清去看附件');
+}
+
+// 5c. 关掉 autoAttachOverflow 时仍然是明确的报错
+{
+  const ego = makeFakeEgo();
+  const bridge = new HarkBridge(
+    () => ({ ...baseCfg, harkUrl: 'https://hark.example/p/5c', maxChars: 50, autoAttachOverflow: false }),
+    ego,
+  );
+  await assert.rejects(() => bridge.ask('plan', 'x'.repeat(80)), (e) => {
+    assert.match(e.message, /超过上限 50/);
+    return true;
+  });
+  assert.equal(ego.state.calls, 0, '关掉开关时不该启动浏览器');
 }
 
 // 6. 握手失败不能挡住正式请求（Hark 可能早就学会规则了）
@@ -324,36 +403,128 @@ const baseCfg = { ...DEFAULT_CONFIG, harkUrl: URL1, pollMs: 10, settleMs: 10 };
 
 // 13. 下载成功 → attachmentReply 是文件里的文本
 {
-  // 必须够长且像文档：短回复现在直接读正文，不会去下载（见 13b）。
+  // 门控不再是「正文够不够长、像不像文档」，而是「页面上有没有 md 卡片」：
+  // 所以这里 mdCards:1，正文写什么都行。
   const md = `# 方案\n\n- 第一步\n- 第二步\n\n> 引用\n\n\`\`\`js\nconst a = 1;\n\`\`\`\n\n${'- 补充说明，用来把回复撑到文件通道的门槛以上。\n'.repeat(60)}`;
   const savePath = join(TMP_HOME, 'reply.md');
   const ego = makeFakeEgo({
-    reply: md,
-    download: async () => { writeFileSync(savePath, md, 'utf8'); return { saved: savePath, name: 'reply.md' }; },
+    reply: '方案见附件 改锁方案.md',
+    mdCards: 1,
+    download: async () => { writeFileSync(savePath, md, 'utf8'); return { saved: savePath, name: '改锁方案.md' }; },
   });
   const bridge = new HarkBridge(() => ({ ...baseCfg, harkUrl: 'https://hark.example/p/13' }), ego);
   const r = await bridge.ask('plan', '给我一个 md', { attachmentSavePath: savePath });
   assert.equal(r.done, true);
   assert.equal(r.attachmentReply, md, 'attachmentReply 要等于下载到的文件内容');
-  assert.equal(r.attachmentName, 'reply.md');
+  assert.equal(r.attachmentName, '改锁方案.md');
+  // B3 的另一半：路径必须传到返回值上，否则上层那行「已下载」永远不出现。
+  assert.equal(r.attachmentPath, savePath, 'attachmentPath 要一路传到返回值');
   assert.deepEqual(r.warnings, []);
 }
 
-// 13b. 一句话的回复不下载文件：页面上没有本次卡片时去翻，只会翻到别人的旧卡片
+// 13b. 页面上没有本次卡片就不下载：没卡片时去翻只会翻到别人留下的旧卡片
 {
-  const ego = makeFakeEgo({ reply: '收到', download: null });
+  const ego = makeFakeEgo({ reply: '收到', mdCards: 0, download: null });
   const bridge = new HarkBridge(() => ({ ...baseCfg, harkUrl: 'https://hark.example/p/13b' }), ego);
   const r = await bridge.ask('chat', '在吗', { attachmentSavePath: join(TMP_HOME, 'no.md') });
   assert.equal(r.done, true);
   assert.equal(r.reply, '收到');
-  assert.equal(ego.state.calls, 2, '短回复不该触发下载脚本');
+  assert.equal(ego.state.calls, 2, '没有卡片时不该触发下载脚本');
   assert.ok(!('attachmentReply' in r));
+}
+
+// 13c. 正文很长但页面上没有卡片 → 仍然不下载
+//
+// 这正是 0.5.0 的真机故障：Hark 把长回复直接写在气泡里（没生成文件），
+// 旧逻辑一看「够长、有结构」就去下载，结果翻到的是上一轮留下的旧卡片，
+// 把不相干的内容当成本次回复。现在只看卡片数，长正文也照样直接读。
+{
+  const long = `# 很长的正文\n\n${'- 一条很长很长的说明，用来模拟 Hark 直接把长内容写在气泡里的情况。\n'.repeat(80)}`;
+  const ego = makeFakeEgo({ reply: long, mdCards: 0, download: null });
+  const bridge = new HarkBridge(() => ({ ...baseCfg, harkUrl: 'https://hark.example/p/13c' }), ego);
+  const r = await bridge.ask('plan', '直接写在正文里', { attachmentSavePath: join(TMP_HOME, 'none2.md') });
+  assert.equal(r.done, true);
+  assert.equal(ego.state.calls, 2, '没有卡片就不该下载，正文多长都一样');
+  assert.ok(r.reply.startsWith('# 很长的正文'));
+  assert.ok(!('attachmentReply' in r));
+}
+
+// 13d. 没有锚点（找不到带请求编号的气泡）→ 绝不下载，即使页面上有卡片
+//
+// 这是审查意见 N2：请求气泡被渲染成「截断预览」时，里面没有 footTag，
+// 早先的实现把 startAt 当成 -1 之后退化成全页筛选，于是取回上一轮的旧卡片，
+// 还被 index.js 当成本次回复整段替换——模型拿着过期内容以为是新的。
+{
+  const ego = makeFakeEgo({
+    reply: '方案见附件 旧的方案.md',
+    mdCards: 0,
+    anchored: false,
+    mdTotal: 3,
+    download: null,
+  });
+  const bridge = new HarkBridge(() => ({ ...baseCfg, harkUrl: 'https://hark.example/p/13d' }), ego);
+  const r = await bridge.ask('plan', '锚点找不到', { attachmentSavePath: join(TMP_HOME, 'stale.md') });
+  assert.equal(r.done, true);
+  assert.equal(ego.state.calls, 2, '没锚点就不该跑下载脚本');
+  assert.ok(!('attachmentReply' in r), '绝不能把旧卡片当本次回复');
+  assert.ok(!('attachmentPath' in r));
+  // 但要能看出发生过什么：页面上确实有卡片，却没一张算在本轮名下。
+  assert.ok(
+    r.warnings.some((w) => w.includes('没有一个能确认属于本次请求')),
+    JSON.stringify(r.warnings),
+  );
+}
+
+// 13e. 卡片比结束标记晚到：plan/review 要等一个宽限期，等到了就下载
+//
+// 这是审查意见 N3：Hark 先渲染文字气泡（结尾是结束标记），文件卡片要等上传完
+// 才出现，通常慢一两秒。settle 只保证文字稳定，若此时立刻判「没卡片」，
+// plan/review 的文件通道就整个形同虚设。
+{
+  const md = '# 迟到的方案\n\n- 第一步\n';
+  const savePath = join(TMP_HOME, 'late.md');
+  const ego = makeFakeEgo({
+    reply: '方案见附件 迟到的方案.md',
+    // 前面几轮 0 张，之后 1 张：模拟卡片在文字定稿后才渲染出来。
+    // 第 5 轮才出现，确保文字定稿（第 2 轮）之后确实经历过「有锚点但没卡片」的宽限期。
+    mdCards: 0,
+    lateCardAt: 5,
+    download: async () => { writeFileSync(savePath, md, 'utf8'); return { saved: savePath, name: '迟到的方案.md' }; },
+  });
+  const bridge = new HarkBridge(
+    () => ({ ...baseCfg, harkUrl: 'https://hark.example/p/13e', attachGraceMs: 2000 }),
+    ego,
+  );
+  const r = await bridge.ask('plan', '等卡片', { attachmentSavePath: savePath });
+  assert.equal(r.done, true);
+  assert.equal(r.attachmentReply, md, '宽限期内出现的卡片要能拿到');
+  assert.equal(r.attachmentPath, savePath);
+}
+
+// 13f. chat 模式不等卡片：闲聊多等 8 秒纯属浪费
+//
+// 卡片到很晚才出现（第 12 轮），chat 在文字定稿时就该走人，等不到它。
+{
+  const ego = makeFakeEgo({ reply: '收到', mdCards: 0, lateCardAt: 12, download: null });
+  const bridge = new HarkBridge(
+    () => ({ ...baseCfg, harkUrl: 'https://hark.example/p/13f', attachGraceMs: 2000 }),
+    ego,
+  );
+  const t0 = Date.now();
+  const r = await bridge.ask('chat', '在吗', { attachmentSavePath: join(TMP_HOME, 'chat.md') });
+  assert.equal(r.done, true);
+  assert.equal(ego.state.calls, 2, 'chat 不下载');
+  assert.ok(Date.now() - t0 < 1500, `chat 不该等宽限期，实际用了 ${Date.now() - t0}ms`);
 }
 
 // 14. 下载失败绝不能把一次成功的 ask 判死，只记 warning
 {
   const md = `# 方案\n\n- 第一步\n- 第二步\n\n\`\`\`js\nconst a = 1;\n\`\`\`\n\n${'- 补充说明，用来把回复撑到文件通道的门槛以上。\n'.repeat(60)}`;
-  const ego = makeFakeEgo({ reply: md, download: async () => ({ error: '页面上找不到 .md 附件卡片' }) });
+  const ego = makeFakeEgo({
+    reply: md,
+    mdCards: 1,
+    download: async () => ({ error: '页面上找不到 .md 附件卡片' }),
+  });
   const bridge = new HarkBridge(() => ({ ...baseCfg, harkUrl: 'https://hark.example/p/14' }), ego);
   const r = await bridge.ask('plan', '这次没有附件', { attachmentSavePath: join(TMP_HOME, 'none.md') });
   assert.equal(r.done, true);
@@ -361,6 +532,7 @@ const baseCfg = { ...DEFAULT_CONFIG, harkUrl: URL1, pollMs: 10, settleMs: 10 };
   assert.ok(r.reply.startsWith('# 方案'), r.reply.slice(0, 40));
   assert.ok(r.warnings.some((w) => w.includes('附件下载未完成')), JSON.stringify(r.warnings));
   assert.ok(!('attachmentReply' in r));
+  assert.ok(!('attachmentPath' in r), '下载失败时不该编造路径');
 }
 
 rmSync(TMP_HOME, { recursive: true, force: true });

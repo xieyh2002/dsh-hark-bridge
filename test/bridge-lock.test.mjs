@@ -7,7 +7,7 @@
  *  - 排队取消：用户按停时如果还要等前一个请求跑完才返回，界面会假死。
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -102,6 +102,44 @@ console.log('ok   释放即清理');
   assert.ok(cost < 500, `排队中的请求应立刻抛出，实际等了 ${cost}ms`);
   assert.equal(calls.filter((x) => x === 'start').length, 1, '被取消的请求不该真的去启动 ego');
   console.log(`ok   排队中取消不阻塞（${cost}ms）`);
+}
+
+// ---- 6. 长请求不能被当成残留抢走（审查意见 B1） ----
+//
+// 早先用 mtime 判断生死：任何超过 10 分钟的请求都会被别人当残留删掉锁。
+// 而 timeoutMin 上限就是 120 分钟，20 分钟的请求完全正常。
+// 现在有 pid 就以 pid 为准——自己的 pid 当然活着，mtime 再老也不该被抢。
+{
+  // 造一个「活着但很久没动」的锁：pid 用自己，mtime 拨到 1 小时前。
+  const lockFile = join(dir, 'bridge.lock');
+  writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 'other-holder', at: 0 }));
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  utimesSync(lockFile, old, old);
+
+  const ac = new AbortController();
+  const waiting = acquireLock(dir, ac.signal);
+  await sleep(400);
+  ac.abort(new Error('不等了'));
+  await assert.rejects(waiting, (e) => e.name === 'AbortError', '持有者还活着，就不该抢锁');
+  assert.equal(existsSync(lockFile), true, '别人的锁不能被删');
+  // 用完自己清掉：这个锁的 pid 就是本进程，留着会让下面每个用例都抢不到。
+  rmSync(lockFile, { force: true });
+  console.log('ok   长时间持锁不会被误抢');
+}
+
+// ---- 7. 锁被接管后，原来的持锁方不能删别人的锁（审查意见 B1） ----
+//
+// 这是 B1 真正的杀伤点：老 release 无条件 rmSync。A 的锁被 B 抢走（无论抢得对不对），
+// A 结束时会把 B 的锁删掉，于是 C 畅通无阻地进来，B 和 C 同时往 Hark 里打字。
+{
+  const release1 = await acquireLock(dir);
+  const lockFile = join(dir, 'bridge.lock');
+  // 模拟「锁已被别人接管」：把内容换成另一个 token。
+  writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 'someone-else', at: Date.now() }));
+  release1();
+  assert.equal(existsSync(lockFile), true, 'token 不是自己的，release 不能删');
+  rmSync(lockFile, { force: true });
+  console.log('ok   只删自己的锁');
 }
 
 rmSync(dir, { recursive: true, force: true });

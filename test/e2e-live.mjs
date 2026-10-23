@@ -89,7 +89,10 @@ const PAGE = [
   // md 卡片：点开才插 dialog，卡片本身不带 href —— 跟真实 Hark 一样要两步
   'function mdCard() {',
   '  const card = document.createElement("button");',
-  '  card.setAttribute("aria-label", "打开 reply.md 的预览");',
+  // 用中文名，是因为真实 Hark 的附件名常常是中文（"仓库审查意见.md"）。bridge 要从
+  // aria-label 里剥掉「打开 … 的预览」前后缀才能拿到文件名，这条断言同时验证那段正则
+  // 对中文生效（审查意见建议 3）——早先正则被二次转义吃掉时，中文名会整个解析失败。
+  '  card.setAttribute("aria-label", "打开 仓库审查意见.md 的预览");',
   // 不放可见文字：卡片现在挂在气泡里面（见下面 appendChild 的注释），而 bridge 用
   // 气泡 innerText 判定结束标记和发言归属，卡片文字会粘在标记后面把「标记在行尾」破坏掉。
   // 真实 Hark 用图标 + aria-label，可见文件名在卡片内部更深的节点里，不影响这里的判断。
@@ -320,6 +323,8 @@ try {
     JSON.stringify(r6.attached));
   check('下行：attachmentReply 等于假页面返回的 markdown', r6.attachmentReply === MD,
     JSON.stringify(String(r6.attachmentReply || '').slice(0, 60)));
+  // 中文附件名要原样解析出来，不能被清洗成下划线（审查意见建议 3）
+  check('下行：中文附件名原样解析', r6.attachmentName === '仓库审查意见.md', String(r6.attachmentName));
   check('发送后校验：气泡里有文件名，没有缺失警告',
     !r6.warnings.some((w) => w.includes('发送后校验')), JSON.stringify(r6.warnings));
 } finally {
