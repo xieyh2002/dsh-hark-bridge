@@ -204,18 +204,18 @@ const exec = { agent: { session: { header: { cwd: workspace } } } };
   });
   const { ctx, tools } = makeCtx();
   apply(ctx, { harkUrl: 'https://hark.example.com/p/1', settleMs: 0, markdownMinChars: 0 }, { bridge: { streamScript: fake.streamScript } });
+  const before = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
   const out = await tools[0].execute({ mode: 'review', user_request: '审查', analysis: '审整个仓库' }, exec);
 
   assert.ok(out.includes('# 完整审查'), `返回值应带附件原文：${out.slice(0, 200)}`);
   assert.ok(out.includes('先跑一遍测试'), '聊天正文里的额外信息不能丢');
-  assert.ok(out.includes('📎 Hark 附带的文件已下载（仓库审查.md）'), `应点名附件：${out}`);
-  // 落盘的文件里两份内容都在，且附件在前（正文是渲染后的，附件才是可加工的原文）
-  const files = fs.readdirSync(dir);
-  const saved = files.map((f) => path.join(dir, f)).filter((p) => fs.statSync(p).size > 0).pop();
-  const text = fs.readFileSync(saved, 'utf8');
-  const iAtt = text.indexOf('# 完整审查');
-  const iChat = text.indexOf('先跑一遍测试');
-  assert.ok(iAtt >= 0 && iChat > iAtt, '附件原文要在前，聊天正文附在后');
+  // 拿到附件就不再另存副本（审查意见 S-d），所以路径行说的是「附件」而不是「已保存」，
+  // 且要点名是哪个文件——模型得知道去哪儿读原文。
+  assert.ok(out.includes('📄 Hark 附带的文件已下载（仓库审查.md）'), `应点名附件：${out}`);
+  assert.ok(out.includes(attPath), '路径要给出，模型才能读');
+  // 不再往 replies 里存第二份：附件本身就是这份回复。
+  const after = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
+  assert.equal(after, before, '附件已经落盘，不该再复制一份到 replies');
 }
 
 // --- 11. 只有附件、聊天正文没新信息时，不再存第二份（审查意见 N5） ---

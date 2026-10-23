@@ -87,12 +87,12 @@ const PAGE = [
   '  }, 800);',
   '});',
   // md 卡片：点开才插 dialog，卡片本身不带 href —— 跟真实 Hark 一样要两步
-  'function mdCard() {',
+  'function mdCard(n) {',
   '  const card = document.createElement("button");',
   // 用中文名，是因为真实 Hark 的附件名常常是中文（"仓库审查意见.md"）。bridge 要从
   // aria-label 里剥掉「打开 … 的预览」前后缀才能拿到文件名，这条断言同时验证那段正则
   // 对中文生效（审查意见建议 3）——早先正则被二次转义吃掉时，中文名会整个解析失败。
-  '  card.setAttribute("aria-label", "打开 仓库审查意见.md 的预览");',
+  '  card.setAttribute("aria-label", "打开 " + n + " 的预览");',
   // 不放可见文字：卡片现在挂在气泡里面（见下面 appendChild 的注释），而 bridge 用
   // 气泡 innerText 判定结束标记和发言归属，卡片文字会粘在标记后面把「标记在行尾」破坏掉。
   // 真实 Hark 用图标 + aria-label，可见文件名在卡片内部更深的节点里，不影响这里的判断。
@@ -122,6 +122,16 @@ const PAGE = [
   '  bubble.setAttribute("data-bubble-id", "b" + seq);',
   // 文件名写进气泡：bridge 的「发送后校验」就是在这里找的
   '  bubble.textContent = text + (names.length ? "\\n[附件] " + names.join("、") : "");',
+  // 用户自己上传的 .md 也会渲染成卡片，而且落在「请求之后、结束标记之前」这一段里。
+  // 两张都挂上，各测一条防线（审查意见 X1）：
+  //  - 上传笔记.md 不在 uploadNames 里，只能靠「结束标记气泡才是下界」排除；
+  //  - 中文 名.md 就是本次上传的文件名，靠 uploadNames 双保险排除。
+  // 早先按下界=请求气泡筛选，这两张都会被数进来，FIND 取最后一个就把
+  // 「我刚传上去的文件」当成了 Hark 的回复。
+  '  if (names.length) {',
+  '    bubble.appendChild(mdCard("上传笔记.md"));',
+  '    for (const n of names) if (/\\.md$/i.test(n)) bubble.appendChild(mdCard(n));',
+  '  }',
   '  box.appendChild(bubble);',
   '  log.appendChild(box);',
   '  ta.value = "";',
@@ -147,14 +157,19 @@ const PAGE = [
   '      "```",',
   '      "",',
   '      "",',
+  // 回复正文里引用请求编号：Hark 解释协议、复述请求时很常见（审查意见 拍板 3）。
+  // 早先上界用 /\[DSH#[a-z0-9]+\]/ 全文匹配，这一行会让上界落到回复自己身上，
+  // 卡片全被排除，mdCards 恒为 0 且不报错——文件通道静默失效。
+  '      "（你这次发的编号是 [DSH#" + id + "]，我按约定回复。）",',
+  '      "",',
   '      "结论：链路正常。",',
   '      "[[DSH-END#" + id + "]]",',
   '    ].join("\\n");',
   '    r.appendChild(rb);',
-  // 卡片必须挂在气泡里面：bridge 是按「包含 footTag 的气泡之后的那个气泡里」来找卡片的，
-  // 挂在气泡外面的兄弟节点上，closest() 会返回 null，永远找不到——真实 Hark 也是挂在气泡里。
-  '    rb.appendChild(mdCard());',
   '    log.appendChild(r);',
+  // 卡片比文字晚 1.2 秒：真实 Hark 要先上传完才渲染卡片（审查意见 N3）。
+  // settleMs 只有 600ms，文字定稿时卡片还没出现——plan/review 必须靠宽限期等它。
+  '    setTimeout(() => { rb.appendChild(mdCard("仓库审查意见.md")); }, 1200);',
   '  }, 500);',
   '}',
   'ta.addEventListener("keydown", (e) => {',
@@ -193,6 +208,10 @@ const config = {
   markdownMinChars: 0,
   fetchAttachment: true,
   attachTimeoutSec: 60,
+  // 假页面的卡片比文字晚 1.2 秒才渲染（照抄真实 Hark），plan/review 得等它。
+  // 这里必须显式给：config 是手写对象，不走 DEFAULT_CONFIG 的兜底，
+  // 缺了它就是 undefined，宽限期算出来是 NaN，等于没有宽限期。
+  attachGraceMs: 5000,
   fileInputSelector: '',
   attachmentSelector: '',
 };
@@ -260,7 +279,11 @@ try {
   check('回复包含自动回复正文', r1.reply.includes('假 Hark 的自动回复'));
   check('回复包含结论', r1.reply.includes('结论：链路正常'));
   check('回复里不含结束标记', !r1.reply.includes('DSH-END'));
-  check('回复里不含请求头', !r1.reply.includes('[DSH#'));
+  // 回复里**可以**出现 [DSH#id]（Hark 复述请求编号很常见，这条假页面也故意这么写，
+  // 用来验证「上界只认行首起始标签」——审查意见 拍板 3）。
+  // 不能出现的是请求头本身：`[DSH#id] <mode>` 独占一行。
+  check('回复里不含请求头', !/^\s*\[DSH#[a-z0-9]+\]\s+(plan|review|chat)\b/m.test(r1.reply),
+    JSON.stringify(r1.reply.slice(0, 80)));
   check('代码块内连续空行原样保留', /const a = 1;\n\n\nconst b = 2;/.test(r1.reply),
     JSON.stringify(r1.reply.slice(r1.reply.indexOf('const a'), r1.reply.indexOf('const a') + 40)));
   // 围栏外的连续空行必须被压缩：按 ``` 切成段，偶数段是围栏外内容（逐段检查，不要 join）

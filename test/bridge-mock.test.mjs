@@ -74,6 +74,9 @@ function makeFakeEgo({
   // lateCardAt：第几轮 poll 之后卡片才出现（模拟卡片比文字晚渲染，审查意见 N3）。
   // null 表示一直按 mdCards 给。
   lateCardAt = null,
+  // throwAtPoll：第几轮 poll 时抛错（模拟宽限期内读页失败、ego 进程提前退出，
+  // 审查意见 拍板 1）。null 表示不抛。
+  throwAtPoll = null,
 } = {}) {
   const state = { typed: '', calls: 0, all: [], scripts: [], staged: [], stagedContents: [] };
   const streamScript = async function* (script, { signal } = {}) {
@@ -123,6 +126,12 @@ function makeFakeEgo({
       if (signal?.aborted) {
         const e = new Error('已取消');
         e.name = 'AbortError';
+        throw e;
+      }
+      if (throwAtPoll !== null && i >= throwAtPoll) {
+        const e = new Error('Hark 页面忽然读不到内容了（可能被导航或关闭）');
+        e.name = 'EgoStageError';
+        e.stage = 'script';
         throw e;
       }
       // 完整页面长这样（导航栏在前，然后是我们的请求，之后是 Hark 的回复）
@@ -470,7 +479,7 @@ const baseCfg = {
   assert.ok(!('attachmentPath' in r));
   // 但要能看出发生过什么：页面上确实有卡片，却没一张算在本轮名下。
   assert.ok(
-    r.warnings.some((w) => w.includes('没有一个能确认属于本次请求')),
+    r.warnings.some((w) => w.includes('没有一个能确认属于本次回复')),
     JSON.stringify(r.warnings),
   );
 }
@@ -517,7 +526,50 @@ const baseCfg = {
   assert.ok(Date.now() - t0 < 1500, `chat 不该等宽限期，实际用了 ${Date.now() - t0}ms`);
 }
 
-// 14. 下载失败绝不能把一次成功的 ask 判死，只记 warning
+// 13g. 宽限期内出错，已定稿的回复必须保住（审查意见 拍板 1）
+//
+// 文字早就写完了，只是卡片没等到；此时读页抛错（页面被导航、ego 提前退出、
+// streamScript 的 timeoutMs 抢先触发），若直接上抛，用户会看到「这次失败了」，
+// 而实际上完整回复已经在手上——他要为一张拿不到的卡片重跑几十秒。
+{
+  const ego = makeFakeEgo({
+    reply: '方案：\n1. 先改锁',
+    mdCards: 0,
+    // 第 4 轮抛错：文字在第 2 轮就定稿了，此时正处在宽限期里。
+    throwAtPoll: 4,
+    download: null,
+  });
+  const bridge = new HarkBridge(
+    () => ({ ...baseCfg, harkUrl: 'https://hark.example/p/13g', attachGraceMs: 2000 }),
+    ego,
+  );
+  const r = await bridge.ask('plan', '宽限期里出错', { attachmentSavePath: join(TMP_HOME, 'g.md') });
+  assert.equal(r.done, true, '已经定稿的回复不能报失败');
+  assert.equal(r.reply, '方案：\n1. 先改锁');
+  assert.equal(ego.state.calls, 2, '没卡片就不该跑下载脚本');
+  assert.ok(
+    r.warnings.some((w) => w.includes('回复已定稿，但等待附件卡片时出错')),
+    JSON.stringify(r.warnings),
+  );
+}
+
+// 13h. 取消仍然是取消，不能被 settled 兜底吞掉（审查意见 拍板 1 的反面）
+//
+// 兜底只看「有没有定稿」，但用户按下停止时，哪怕文字已经完整也必须原样抛
+// AbortError：模型要能区分「拿到了但用户不要了」和「拿到了」。
+{
+  const ego = makeFakeEgo({ reply: '方案：\n1. 先改锁', mdCards: 0, download: null });
+  const bridge = new HarkBridge(
+    () => ({ ...baseCfg, harkUrl: 'https://hark.example/p/13h', attachGraceMs: 5000 }),
+    ego,
+  );
+  const ac = new AbortController();
+  const p = bridge.ask('plan', '发完就取消', { signal: ac.signal, attachmentSavePath: join(TMP_HOME, 'h.md') });
+  setTimeout(() => ac.abort(new Error('用户按了停止')), 120);
+  await assert.rejects(p, (e) => e.name === 'AbortError', '取消必须原样上抛');
+}
+
+
 {
   const md = `# 方案\n\n- 第一步\n- 第二步\n\n\`\`\`js\nconst a = 1;\n\`\`\`\n\n${'- 补充说明，用来把回复撑到文件通道的门槛以上。\n'.repeat(60)}`;
   const ego = makeFakeEgo({

@@ -104,27 +104,49 @@ console.log('ok   释放即清理');
   console.log(`ok   排队中取消不阻塞（${cost}ms）`);
 }
 
-// ---- 6. 长请求不能被当成残留抢走（审查意见 B1） ----
+// ---- 6. 活着的持有者不能被抢（审查意见 B1 + S-a） ----
 //
 // 早先用 mtime 判断生死：任何超过 10 分钟的请求都会被别人当残留删掉锁。
 // 而 timeoutMin 上限就是 120 分钟，20 分钟的请求完全正常。
-// 现在有 pid 就以 pid 为准——自己的 pid 当然活着，mtime 再老也不该被抢。
+// 现在持有者每 60 秒心跳一次刷新 mtime，所以「pid 活着 + mtime 新」= 真的在干活。
 {
-  // 造一个「活着但很久没动」的锁：pid 用自己，mtime 拨到 1 小时前。
   const lockFile = join(dir, 'bridge.lock');
-  writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 'other-holder', at: 0 }));
-  const old = new Date(Date.now() - 60 * 60 * 1000);
-  utimesSync(lockFile, old, old);
+  writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 'other-holder', at: Date.now() }));
 
   const ac = new AbortController();
   const waiting = acquireLock(dir, ac.signal);
   await sleep(400);
   ac.abort(new Error('不等了'));
-  await assert.rejects(waiting, (e) => e.name === 'AbortError', '持有者还活着，就不该抢锁');
+  await assert.rejects(waiting, (e) => e.name === 'AbortError', '持有者还在心跳，就不该抢锁');
   assert.equal(existsSync(lockFile), true, '别人的锁不能被删');
   // 用完自己清掉：这个锁的 pid 就是本进程，留着会让下面每个用例都抢不到。
   rmSync(lockFile, { force: true });
-  console.log('ok   长时间持锁不会被误抢');
+  console.log('ok   持有者还在心跳时不会被误抢');
+}
+
+// ---- 6b. pid 被复用也要能回收（审查意见 S-a） ----
+//
+// 只信 pid 会死锁：持锁进程被强杀后，Windows 会把它的 pid 分给别的进程，
+// isAlive 于是永远返回 true，那把锁再没人能回收。
+// 所以「心跳停了 3 个周期」也算残留——时间戳骗不过。
+{
+  const lockFile = join(dir, 'bridge.lock');
+  // pid 用自己（活着），但 mtime 拨到 4 分钟前：心跳早已停摆，是残留。
+  writeFileSync(lockFile, JSON.stringify({ pid: process.pid, token: 'dead-heartbeat', at: 0 }));
+  const old = new Date(Date.now() - 4 * 60 * 1000);
+  utimesSync(lockFile, old, old);
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(new Error('抢不到')), 3000);
+  let release = null;
+  try {
+    release = await acquireLock(dir, ac.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+  assert.ok(release, '心跳停摆的锁必须能被回收，否则 pid 复用会永久死锁');
+  release();
+  console.log('ok   心跳停摆的锁能回收（pid 复用不死锁）');
 }
 
 // ---- 7. 锁被接管后，原来的持锁方不能删别人的锁（审查意见 B1） ----
