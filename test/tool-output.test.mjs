@@ -301,7 +301,8 @@ const exec = { agent: { session: { header: { cwd: workspace } } } };
   const fake = makeFake({ reply: 'ok' });
   const { ctx, tools } = makeCtx();
   apply(ctx, { harkUrl: 'https://hark.example.com/p/1', settleMs: 0, markdownMinChars: 0 }, { bridge: { streamScript: fake.streamScript } });
-  const spec = tools[0].parameters.attachments;
+  // parameters 现在是标准 JSON Schema，字段定义在 properties 下。
+  const spec = tools[0].parameters.properties.attachments;
   assert.ok(spec, 'ask_hark 应有 attachments 参数');
   assert.equal(spec.type, 'array');
   assert.equal(spec.items.type, 'string');

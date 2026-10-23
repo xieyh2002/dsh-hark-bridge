@@ -2,6 +2,20 @@
 
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.9.1
+
+### 降级路径产出的参数定义不是合法 JSON Schema
+
+`lib/index.js` 顶上有一段 `try { defineTool = (await import('@deepseek-ai/dsh-tools')).defineTool } catch { /* 用本地兜底 */ }`，兜底是 `(def) => def`——**原样返回**。
+
+但工具定义里 `parameters` 写的是 DSL：`{ mode: { type: 'string', required: true } }`。它不是 JSON Schema：缺顶层 `type: 'object'`，`required` 也不是数组而是一个个字段上的布尔。原样交给宿主，模型看到的参数定义就是错的——`analysis`、`mode` 这些必填项不再必填，而模型不知道要填什么。
+
+危险之处在于它只在「import 失败」时发生，也就是测试环境和依赖缺失的场景，恰恰是没人盯着的场景。兜底不该是「什么都不做」，那样等于把一个错误悄悄变成另一个更难查的错误。
+
+现在兜底会做完整转换：拆出字段上的 `required` 汇成数组、补顶层 `type: 'object'`、嵌套对象递归处理。正常路径（`dsh-tools` 加载成功）完全不受影响——它自己就会编译 DSL。
+
+`test/plugin-wiring.test.mjs` 里原来那条 `assert.ok(tools[0].parameters.analysis.required)` 断言的就是这种 DSL 形状，等于在测错误的行为；已改为断言合法 JSON Schema 的形状（顶层 `type`、`required` 是数组且含 `mode`/`analysis`、可选参数不在里面、`attachments.items.type` 正确、字段上不残留 `required`）。
+
 ## 0.9.0
 
 纯内部重构，对外行为不变。`lib/bridge.js` 从 1826 行降到 1730 行，判定逻辑搬到新建的 `lib/ask-machine.js`（208 行）。

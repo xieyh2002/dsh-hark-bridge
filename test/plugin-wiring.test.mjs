@@ -40,7 +40,18 @@ apply(ctxWith, {});
 assert.equal(tools.length, 1);
 assert.equal(tools[0].name, 'ask_hark');
 assert.ok(tools[0].description.includes('「交给 Hark」'));
-assert.ok(tools[0].parameters.analysis.required);
+// parameters 必须是合法 JSON Schema：顶层 type:'object'，必填项在 required 数组里。
+// 这里守住降级路径——import('@deepseek-ai/dsh-tools') 失败时 defineTool 自己转，
+// 转错了模型看到的参数定义就是错的，而且只在没人盯着的场景发生。
+assert.equal(tools[0].parameters.type, 'object', 'parameters 必须声明 type: object');
+assert.ok(Array.isArray(tools[0].parameters.required), 'required 必须是数组');
+assert.ok(tools[0].parameters.required.includes('analysis'), 'analysis 必须是必填');
+assert.ok(tools[0].parameters.required.includes('mode'), 'mode 必须是必填');
+assert.ok(!tools[0].parameters.required.includes('context'), 'context 是可选参数');
+assert.equal(tools[0].parameters.properties.analysis.type, 'string');
+assert.equal(tools[0].parameters.properties.attachments.type, 'array');
+assert.equal(tools[0].parameters.properties.attachments.items.type, 'string');
+assert.ok(!('required' in tools[0].parameters.properties.analysis), 'DSL 的 required 不能残留到字段上');
 assert.deepEqual(commands.map((c) => c.name).sort(), ['hark', 'hark-diag', 'hark-login', 'hark-url']);
 
 // --- 宿主没有 commands：不能抛错，工具照旧可用 ---
