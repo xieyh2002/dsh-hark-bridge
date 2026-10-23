@@ -82,7 +82,9 @@ test('真实页面上的文件卡片能抠出文件名', () => {
 });
 
 test('MD_CARD_EXPR 在真实 DOM 上认得出本次回复的卡片', () => {
-  const end = '[[DSH-END#fixture1]]';
+  // 用 fixture3：它的回复气泡后面紧跟着 Hark 给的卡片。
+  // 别用 fixture1——那条回复后面没有卡片，把用户自己上传的那张排除掉之后就该是 0。
+  const end = '[[DSH-END#fixture3]]';
   const counted = run(PAGE_EXPR.countMdCards(SEL.card, end, []));
   const info = JSON.parse(counted);
   assert.equal(info.anchored, true, '夹具里有结束标记，应该能锚定到它所在的气泡');
@@ -91,8 +93,44 @@ test('MD_CARD_EXPR 在真实 DOM 上认得出本次回复的卡片', () => {
   assert.ok(info.total >= info.count, 'total 是筛选前的总数，不该小于 count');
 });
 
+test('回复后面没有卡片时就是没有，不会把用户上传的那张算进来', () => {
+  // fixture1 那条：用户在请求里传了 fixture-1.md，Hark 的回复没带文件。
+  // 这是审查意见 X1 的真身——早先按「请求气泡之后」筛，会把自己传的那张
+  // 当成 Hark 的回复下载回来。
+  const info = JSON.parse(run(PAGE_EXPR.countMdCards(SEL.card, '[[DSH-END#fixture1]]', [])));
+  assert.equal(info.anchored, true);
+  assert.equal(info.count, 0, `回复后面本来没有卡片，却数到 ${info.count} 张（total=${info.total}）`);
+  assert.equal(run(PAGE_EXPR.findMdCard(SEL.card, '[[DSH-END#fixture1]]', [])), null,
+    '回复后面没有卡片时，不该取到任何卡片');
+});
+
+test('带附件的请求气泡也认得出是请求（否则上界失效）', () => {
+  // 真实页面上 Hark 把用户上传的附件 chip 排在气泡内、文字前面，
+  // 于是整个气泡的 innerText 首行是文件名，`^[DSH#…]` 匹配不上。
+  // 只看正文元素（message-text）才认得出。
+  const r = run(`(() => {
+    const bubbles = [...document.querySelectorAll(${JSON.stringify(SEL.bubble)})];
+    const textSel = ${JSON.stringify(SEL.messageText)};
+    const whole = (b) => /^\\s*\\[DSH#[a-z0-9]+\\]\\s+(?:plan|review|chat)\\b/i.test(b.innerText || '');
+    const body = (b) => /^\\s*\\[DSH#[a-z0-9]+\\]\\s+(?:plan|review|chat)\\b/i
+      .test(((b.querySelector(textSel) || b).innerText) || '');
+    return {
+      total: bubbles.length,
+      wholeCount: bubbles.filter(whole).length,
+      bodyCount: bubbles.filter(body).length,
+    };
+  })()`);
+  assert.ok(r.bodyCount > 0, '一条请求都没认出来，夹具或判据有问题');
+  assert.ok(r.bodyCount >= r.wholeCount,
+    `只看正文元素认出的请求（${r.bodyCount}）不该少于看整个气泡（${r.wholeCount}）`);
+  // 夹具里实际有 10 条请求，其中带附件的那几条只看整个气泡会漏。
+  assert.ok(r.bodyCount > r.wholeCount,
+    `夹具里带附件的请求应当能被区分出来（整个气泡 ${r.wholeCount} 条 vs 正文 ${r.bodyCount} 条）——`
+    + '如果相等，说明这批夹具抓的时候没有带附件的请求，夹具失去了它最主要的价值');
+});
+
 test('MD_CARD_EXPR 在真实 DOM 上能取到卡片名，且不会取到自己上传的那张', () => {
-  const end = '[[DSH-END#fixture1]]';
+  const end = '[[DSH-END#fixture3]]';
   const name = run(PAGE_EXPR.findMdCard(SEL.card, end, []));
   assert.equal(typeof name, 'string');
   assert.match(name, /\.(md|diff|ts|js|json|txt|yml)$/i, `取到的卡片名不像文件名：${name}`);

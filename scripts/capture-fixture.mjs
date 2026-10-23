@@ -54,9 +54,21 @@ function sanitize(source) {
   text = text.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
     '00000000-0000-0000-0000-000000000000');
 
-  // 请求编号：统一成 fixture1，方便断言
-  text = text.replace(/\[DSH#[a-z0-9]{6,}\]/gi, '[DSH#fixture1]');
-  text = text.replace(/\[\[DSH-END#[a-z0-9]{6,}\]\]/gi, '[[DSH-END#fixture1]]');
+  // 请求编号：**不同编号必须映射成不同假编号**。
+  //
+  // 早先一律映射成 fixture1，看起来更干净，实际把「哪条回复属于哪条请求」这个
+  // 关系彻底抹掉了：页面上十几次往返全变成同一对标记，`MD_CARD_EXPR` 找「带结束
+  // 标记的气泡」时永远命中最早那条回复，上界（下一条请求）紧跟着落在第 2 条请求上，
+  // 于是本轮之后的所有卡片都被排除，count 恒为 0 ——夹具在测一个不存在的场景。
+  // 保留一一对应，才测得出真实行为。
+  const idMap = new Map();
+  const fakeId = (raw) => {
+    if (!idMap.has(raw)) idMap.set(raw, `fixture${idMap.size + 1}`);
+    return idMap.get(raw);
+  };
+  // 先换 [[DSH-END#...]] 再换 [DSH#...]：前者的正则不会误吃后者，但顺序写清楚更稳
+  text = text.replace(/\[\[DSH-END#([a-z0-9]{6,})\]\]/gi, (m, id) => `[[DSH-END#${fakeId(id)}]]`);
+  text = text.replace(/\[DSH#([a-z0-9]{6,})\]/gi, (m, id) => `[DSH#${fakeId(id)}]`);
 
   // 属性里可能带内容的几个：标题、替代文本、表单值、地址
   text = text.replace(/\s(title|alt|placeholder|value)="[^"]*"/gi, ' $1=""');
