@@ -317,29 +317,46 @@ DSH ──ask──▶ HarkBridge ──spawn──▶ ego-browser nodejs ──
 ## 开发与测试
 
 ```bash
-npm test          # 十个单测，不需要浏览器，秒级跑完
+npm test          # 十四个单测，不需要浏览器，秒级跑完
 npm run test:e2e  # 真实链路：起一个假 Hark 页面，用真 ego 走一遍完整流程
+npm run fixture   # 重新抓一份真实页面结构（脱敏后存 test/fixtures/）
 ```
 
-`npm test` 覆盖：协议拼装与结束标记识别（含 `[/DSH#id]` 不能当结束、正文引用标记、重复渲染、多标记取最后一个）、插件 wiring（`inject` 必须是数组，cordis 4.x 的坑）、配置 schema 兜底与数值夹取、ego 驱动层（事件实时性、跨 UTF-8 边界、取消、脚本自毁、陈旧临时目录清理）、跨进程锁（互斥、残留回收、心跳防误抢、只删自己的锁）与排队取消、附件校验（越界、敏感文件、去重、超限）、回复落盘（同名加后缀、front matter、中文路径）、握手逻辑（首次发 / 只发一次 / 换地址重发 / 失败不阻断 / 规则文本不撞标记）、取消与超时语义、工具层接线（落盘路径、预览截断、越界降级、短回复不落盘、`/hark` 命令同样落盘）、文件通道门控（页面有卡片才下载，一句话直接读正文，超长正文转附件）。
+`npm test` 覆盖：协议拼装与结束标记识别（含 `[/DSH#id]` 不能当结束、正文引用标记、重复渲染、多标记取最后一个）、插件 wiring（`inject` 必须是数组，cordis 4.x 的坑）、配置 schema 兜底与数值夹取、ego 驱动层（事件实时性、跨 UTF-8 边界、取消、脚本自毁、陈旧临时目录清理）、跨进程锁（互斥、残留回收、心跳防误抢、只删自己的锁、不同地址各自排队）与排队取消、附件校验（越界、敏感文件、去重、超限）、回复落盘（文件名规范化、同名加后缀、front matter、中文路径）、页面锚点（中英文界面、卡片名前后缀、`data-testid` 优先）、自检命令、握手逻辑（首次发 / 只发一次 / 换地址重发 / 失败不阻断 / 规则文本不撞标记）、取消与超时语义、工具层接线（落盘路径、预览截断、越界降级、短回复不落盘、`/hark` 命令同样落盘）、文件通道门控（页面有卡片才下载，一句话直接读正文，超长正文转附件）。
+
+### 为什么有一份真实页面的快照
+
+`test/fixtures/hark-conversation.html` 是从真 Hark 页面上抓下来的 DOM 结构（正文全部换成了占位，文件名换成了 `fixture-1.md` 这类假名，项目 id 换成了定长假 uuid）。`test/fixture.test.mjs` 用 jsdom 把它装起来，让页面锚点、卡片抠名、`ATTACH_READY` 这些真实页面表达式直接在它上面跑。
+
+这么做是因为：`test/e2e-live.mjs` 里的假 Hark 页面是照**我们对 Hark 的理解**写的，Hark 改一次前端，CI 依然全绿，而真机上插件已经瞎了。有真实结构在手，改版就能立刻红。
+
+Hark 前端变了之后重新抓一份：
+
+```bash
+npm run fixture                       # 覆盖 hark-conversation.html
+npm run fixture -- english-ui.html    # 或者另存一个（比如切到英文界面再抓）
+```
+
+抓之前得让 ego 里开着那个 Hark 页面（插件自己会去找合适的标签页）。**抓完请先看一眼**：脱敏只保留结构和协议标记，正文一律是「正文占位」，文件名是 `fixture-N.*`，如果看到真实内容说明脱敏漏了，别往外提。
 
 `npm run test:e2e` 会在你的 ego 里临时开一个标签页（`http://127.0.0.1:18941` 的假 Hark 页面），20 项断言，约 20 秒，跑完自己关掉。用的是你真在跑的 ego，所以能看到标签页一闪而过。
 
-两个测试都会把 `DSH_HARK_BRIDGE_HOME` 指向临时目录，不会污染你真实的 `settings.json`。
+`npm test` 和 `npm run test:e2e` 都会把 `DSH_HARK_BRIDGE_HOME` 指向临时目录，不会污染你真实的 `settings.json`。
 
 代码结构：
 
 ```text
 lib/index.js         插件入口：注册 ask_hark 工具与 /hark* 命令
-lib/bridge.js        HarkBridge：排队、握手、发消息、等回复、上传附件、下载附件
+lib/bridge.js        HarkBridge：排队、握手、发消息、等回复、上传附件、下载附件、自检
 lib/protocol.js      消息格式、结束标记、extractReply
-lib/ego.js           浏览器驱动层：找 ego-browser、跑脚本、收事件
+lib/ego.js           浏览器驱动层：找 ego-browser、跑脚本、收事件、杀进程组
 lib/attach.js        上行：校验工作区路径、暂存、命名、超限处理
-lib/reply-store.js   下行：回复落盘（目录解析、文件名、front matter）
+lib/reply-store.js   下行：回复落盘（目录解析、文件名规范化、front matter）
 lib/config-schema.js 配置 schema（schemastery，加载不到会退回内置实现）
-lib/store.js         用户级覆盖层（/hark-url 与握手记录）
+lib/store.js         配置覆盖层（工作区优先，/hark-url 与握手记录）
 lib/selectors.js     页面锚点与文案（中英文双匹配，改版时只动这里）
 skills/hark-collab/  推荐给 DSH 的协作流程
+scripts/capture-fixture.mjs  抓真实页面结构并存成测试夹具
 ```
 
 ## License

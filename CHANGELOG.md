@@ -2,6 +2,27 @@
 
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.8.4
+
+一份从真 Hark 页面抓下来的 DOM 快照，加上让页面表达式直接在它上面跑的单测。
+
+为什么要这个：`test/e2e-live.mjs` 里的假 Hark 页面是照**我们对 Hark 的理解**写的。Hark 改一次前端，假页面不会变，CI 全绿，而真机上插件已经瞎了——0.8.0 修的「界面不是中文就永远发不出附件」就属于这类问题，只有真机才暴露。
+
+### 新增
+
+- `scripts/capture-fixture.mjs` + `npm run fixture`：抓当前页面的 `outerHTML`，脱敏后存进 `test/fixtures/`。脱敏保留标签、class、`data-testid`、`aria-label` 的形状和协议标记本身；正文一律换成「正文占位」（换行数保留，因为行首行尾是协议判定的一部分），文件名换成 `fixture-1.md`，项目 id 换成定长假 uuid。
+- `test/fixtures/hark-conversation.html`：22 个消息气泡、45 段消息正文、21 张文件卡片的真实结构，148 KB。
+- `test/fixture.test.mjs`（9 项）：用 jsdom 装起快照，让 `countMdCards` / `findMdCard` / `ATTACH_READY` / `bubbleText` / 发送按钮文案判定直接在真实 DOM 上跑。
+
+抓的时候踩到两件事，都记在脚本注释里：
+
+- `page.goto` 之后那一帧页面是空的（同一页面第一次采样 `message-bubble` 0 个，半秒后 50 个），所以要先等气泡出现再抓，否则抓到的是一张 84 KB 的空壳。
+- 第一版脱敏只截断超长文本，结果快照里留了完整对话正文——技术细节、项目信息全在。改成「除了协议标记，文本节点一律换占位」，这个夹具是要进公开仓库的。
+
+### 开发
+
+`jsdom` 进了 `devDependencies`，CI 的 `npm ci` 会自动装。
+
 ## 0.8.3
 
 ### 短回复的文件名不再是一串字母数字
