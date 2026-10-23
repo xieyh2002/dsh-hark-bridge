@@ -2,6 +2,14 @@
 
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.8.5
+
+只有一件事：把 `jsdom` 从 30 降到 26，让 Node 20 上的 CI 能装能跑。
+
+0.8.4 推上去之后三个 Node 20 的 job 全红，报的是 `Cannot read properties of undefined (reading 'bind')`，堆栈落在 `node_modules/undici/lib/interceptor/decompress.js:78`——jsdom 27 以上要求 Node ≥ 22.22，在 20 上它的依赖链直接炸掉，跟我们的代码无关。
+
+要么把 `engines` 抬到 `>=22.22`，要么退到 jsdom 26（要求 Node ≥ 18）。选了后者：一份测试夹具不该成为丢掉 Node 20 支持的理由。本地 Node 24 上两种版本行为一致，9 项夹具测试在 26 上照样全过。
+
 ## 0.8.4
 
 一份从真 Hark 页面抓下来的 DOM 快照，加上让页面表达式直接在它上面跑的单测。
@@ -21,7 +29,7 @@
 
 ### 开发
 
-`jsdom` 进了 `devDependencies`，CI 的 `npm ci` 会自动装。
+`jsdom` 进了 `devDependencies`，版本锁在 26。jsdom 27 以上要求 Node ≥ 22.22，而本项目 `engines` 是 `>=20`，CI 里 Node 20 那几个 job 会在 `require('undici')` 时炸在 `Cannot read properties of undefined (reading 'bind')`。要么抬 node 下限，要么用 26——选了后者，不为一份测试夹具丢掉 Node 20 支持。
 
 ## 0.8.3
 
