@@ -112,7 +112,7 @@ const egoMissing = () => null;
   console.log('ok   页面锚点全命中，英文界面也认');
 }
 
-// ---- 6. 页面探测：英文界面被误判时，detail 里要有 aria-label 原文 ----
+// ---- 6. 页面探测：没见过的界面文案要报失败，并带出 aria-label 原文 ----
 {
   const b = new HarkBridge(() => ({ harkUrl: 'https://hark.example.com/p/1' }), {
     findEgo: egoFound,
@@ -133,6 +133,30 @@ const egoMissing = () => null;
   assert.ok(send.detail.includes('Absenden'), 'detail 必须带 aria-label 原文，用户才能复制给我们');
   assert.ok(send.hint.includes('sendSelector'), '要给绕过办法');
   console.log('ok   未知界面语言时把 aria-label 原文带出来，并给 sendSelector 兜底');
+}
+
+// ---- 6b. 空输入时按钮是「开始听写」：不算失败，但要说明原因 ----
+{
+  const b = new HarkBridge(() => ({ harkUrl: 'https://hark.example.com/p/1' }), {
+    findEgo: egoFound,
+    runScript: async () => ({
+      ok: true,
+      url: 'https://hark.example.com/p/1',
+      bubbles: 6,
+      cards: 0,
+      inputs: 1,
+      sendButtons: 1,
+      sendLabel: '开始听写',
+      lang: 'zh-CN',
+    }),
+  });
+  const rows = await b.diagnose();
+  const send = byName(rows, '发送按钮');
+  assert.equal(send.ok, null, '空输入的语音输入态是「注意」不是「失败」');
+  assert.ok(send.detail.includes('开始听写'), 'detail 要带原文');
+  assert.ok(send.detail.includes('空输入'), '要解释为什么会显示成语音输入');
+  assert.equal(send.hint, undefined, '这不是错误，不该给「去改配置」的提示');
+  console.log('ok   空输入时显示「开始听写」算注意，不误导用户去改配置');
 }
 
 // ---- 7. 页面打不开：不能把前面的结论一起吞掉 ----

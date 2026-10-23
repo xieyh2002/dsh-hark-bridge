@@ -59,3 +59,16 @@ test('结构锚点优先用 data-testid，Hark 改文案时不受影响', () => 
   assert.ok(SEL.card.includes('a[aria-label]'), '卡片选择器要覆盖 <a>');
   assert.ok(SEL.card.includes('[role=button]'), '卡片选择器要覆盖 role=button');
 });
+
+test('空输入时的「开始听写」是语音输入态，不是未知文案', () => {
+  // 实测 Hark 中文界面：同一个 button[data-testid=send-button] 在输入框为空时
+  // aria-label 是「开始听写」，有内容（或挂了附件）时才变成「发送消息」。
+  // 自检必须能区分「这一刻没有待发消息」和「文案没见过」——后者才需要用户报 issue。
+  for (const label of ['开始听写', 'Start dictation', 'Dictation', 'Stop dictation']) {
+    assert.equal(TEXT.send.test(label), false, `${label} 不能当发送按钮`);
+    assert.equal(TEXT.dictation.test(label), true, `${label} 要认成语音输入态`);
+  }
+  for (const label of ['发送消息', 'Send message', 'Submit', '提交']) {
+    assert.equal(TEXT.dictation.test(label), false, `${label} 不是语音输入态`);
+  }
+});
