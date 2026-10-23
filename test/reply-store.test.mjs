@@ -140,11 +140,29 @@ test('标题里的 Markdown 符号和文件名非法字符都清掉', (t) => {
   assert.ok(out.rel.includes('复审'), `标题主体要留住：${out.rel}`);
 });
 
-test('没有标题时退回请求编号（保持旧行为）', (t) => {
+test('没有标题时用请求正文当文件名，不再是一串字母数字', (t) => {
+  const root = workspace(t);
+  const dir = join(root, 'r');
+  const out = saveReply({
+    dir, id: 'abc123', mode: 'chat', reply: '收到，我看一下。\n', request: '问一下锁怎么做的', now: NOW,
+  });
+  assert.equal(out.rel, '20261022-204931-chat-问一下锁怎么做的.md');
+});
+
+test('标题和请求都拿不到时才退回请求编号（最后的兜底）', (t) => {
   const root = workspace(t);
   const dir = join(root, 'r');
   const out = saveReply({ dir, id: 'abc123', mode: 'chat', reply: '收到，我看一下。\n', now: NOW });
   assert.equal(out.rel, '20261022-204931-chat-abc123.md');
+});
+
+test('有标题时标题优先于请求正文', (t) => {
+  const root = workspace(t);
+  const dir = join(root, 'r');
+  const out = saveReply({
+    dir, id: 'abc123', mode: 'review', reply: '# 仓库审查意见\n\n- 阻断 1\n', request: '帮我看下仓库', now: NOW,
+  });
+  assert.equal(out.rel, '20261022-204931-review-仓库审查意见.md');
 });
 
 test('超长标题截断到 60 字符，不会撞上文件名长度上限', (t) => {
