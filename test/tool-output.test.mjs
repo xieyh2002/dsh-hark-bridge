@@ -241,6 +241,53 @@ const exec = { agent: { session: { header: { cwd: workspace } } } };
   );
 }
 
+// --- 11b. saveReplies=false 时，Hark 附带的文件照样要下载 ---
+//
+// 早先 `attachmentSaveDir` 是在 `if (cfg.saveReplies)` 里算的，关掉落盘就变成空串，
+// #withAttachment 第一行直接 return——附件根本不会去取。可「存不存聊天正文」和
+// 「取不取 Hark 给的文件」是两件事：关掉落盘的人往往正是只想要文件的那种。
+{
+  const dir = path.join(workspace, '.hark', 'replies');
+  const attPath = path.join(sandbox, 'hark-nosave.md');
+  fs.writeFileSync(attPath, '# 审查意见\n\n- 只想要文件，不想要聊天记录\n', 'utf8');
+  const fake = makeFake({
+    reply: '审查见附件。',
+    mdCards: 1,
+    attachment: { saved: attPath, name: '审查.md' },
+  });
+  const { ctx, tools } = makeCtx();
+  apply(
+    ctx,
+    { harkUrl: 'https://hark.example.com/p/1', saveReplies: false, settleMs: 0, markdownMinChars: 0 },
+    { bridge: { streamScript: fake.streamScript } },
+  );
+  const before = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
+  const out = await tools[0].execute({ mode: 'review', user_request: '审查', analysis: '审仓库' }, exec);
+
+  assert.ok(out.includes('📄 Hark 附带的文件已下载（审查.md）'), `关掉落盘也要下载附件：${out}`);
+  assert.ok(out.includes(attPath), '要给出附件路径');
+  assert.ok(out.includes('只想要文件'), '附件内容要带回来');
+  const after = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
+  assert.equal(after, before, 'saveReplies=false 时不该另存聊天正文');
+}
+
+// --- 11c. saveReplies=false 时，没有附件就不落盘（回归） ---
+{
+  const dir = path.join(workspace, '.hark', 'replies');
+  const fake = makeFake({ reply: '# 长正文\n\n' + '- 一条很长很长的说明\n'.repeat(80), mdCards: 0 });
+  const { ctx, tools } = makeCtx();
+  apply(
+    ctx,
+    { harkUrl: 'https://hark.example.com/p/1', saveReplies: false, settleMs: 0, markdownMinChars: 0 },
+    { bridge: { streamScript: fake.streamScript } },
+  );
+  const before = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
+  const out = await tools[0].execute({ mode: 'plan', user_request: 'x', analysis: 'y' }, exec);
+  const after = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
+  assert.equal(after, before, 'saveReplies=false 且无附件：一个字都不该写');
+  assert.ok(out.includes('一条很长很长的说明'), '正文要原样给模型');
+}
+
 // --- 7. resolveWorkspaceRoot：优先会话 cwd，取不到退回进程目录 ---
 {
   assert.equal(resolveWorkspaceRoot({ agent: { session: { header: { cwd: '/tmp/proj' } } } }), '/tmp/proj');
