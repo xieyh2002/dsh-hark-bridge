@@ -37,6 +37,24 @@ console.log('ok   EOL 线提示换到受支持的版本线');
 for (const v of ['', null, 'abc']) assert.equal(checkNodeVersion(v).ok, null);
 console.log('ok   版本号无法解析时只提醒，不报失败');
 
-// ---- 5. 默认读当前进程（CI 只跑受支持的版本，必须通过）----
-assert.equal(checkNodeVersion().ok, true, `当前 Node ${process.versions.node} 应在受支持范围内`);
-console.log('ok   当前进程版本通过');
+// ---- 5. 默认读当前进程：只验契约，不要求测试机必须是修复版 ----
+//
+// 早先这里断言 checkNodeVersion().ok === true，等于要求「跑测试的 Node 必须是
+// 修复版」。那是把环境要求写进了逻辑测试：CI 的 node: 24 那一格实际拿到
+// 24.21.0（低于 24.22.1），三个 job 直接红；本地用旧版本的人也同样跑不过。
+// 检测逻辑对不对，和测试机装什么版本无关——边界值已在前 4 组里穷举过了。
+{
+  const cur = checkNodeVersion();
+  const running = String(process.versions?.node || '').replace(/^v/, '');
+  assert.equal(cur.version, running, '默认参数必须读 process.versions.node');
+  assert.ok([true, false, null].includes(cur.ok), 'ok 只能是 true / false / null');
+  assert.equal(typeof cur.detail, 'string');
+  assert.ok(cur.detail.length > 0, 'detail 不能为空');
+  assert.ok(!cur.detail.includes('undefined'), 'detail 不能出现 undefined');
+  // 不通过时必须给出下一步，否则用户只知道「坏了」却不知道怎么办
+  if (cur.ok === false) {
+    assert.equal(typeof cur.hint, 'string');
+    assert.ok(cur.hint.length > 0, '不通过时必须给 hint');
+  }
+}
+console.log('ok   默认读当前进程的契约（不要求测试机必须是修复版）');

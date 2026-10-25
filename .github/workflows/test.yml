@@ -12,8 +12,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        # 只测含 2026-10-21 安全修复的版本线；setup-node 取各线最新版
-        node: ['22.23.4', 24, 26]
+        # 钉死在各线的最低修复版本上，不写 24 / 26 这种浮动值：
+        # runner 镜像跟不跟得上 Node 发版不由我们决定，实测同一轮里
+        # ubuntu 拿到 24.21.0、windows 和 macos 拿到 24.22.x。钉住之后
+        # 既保证确定性，又正好在测 engines 声明的下限。
+        node: ['22.23.4', '24.22.1', '26.12.1']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
