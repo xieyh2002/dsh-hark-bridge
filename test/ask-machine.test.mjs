@@ -121,12 +121,45 @@ console.log('ask machine tests');
   assert.equal(f.action, 'finish', '没有卡片也是成功');
 }
 
-// 6. chat 模式不宽限：闲聊多等纯属浪费
+// 6. chat 用 'long'：短回复不等，长回复照样等
+//
+// 为什么 chat 不能一律等：Hark 被要求「回答超过 300 字也写成 .md」，于是每个
+// 一句「收到」的闲聊都会白站 attachGraceMs（默认 8 秒），用户会觉得插件卡住。
+// 但也不能一律不等——chat 的回答真的写长了，那份 .md 才是原文。
+{
+  let s = initialState();
+  let r = stepPoll(s, replyObs(2000, { mdCards: 0 }), cfg({ wantsFile: 'long', attachGraceMs: 5000 }));
+  r = stepPoll(r.state, replyObs(2100, { mdCards: 0 }), cfg({ wantsFile: 'long', attachGraceMs: 5000 }));
+  assert.equal(r.action, 'finish', '短回复的 chat 不等卡片');
+  assert.equal(r.state.settled.reply, '方案正文');
+}
+{
+  // 同样的流程，但正文超过长回复门槛
+  const long = `${'\n很长的回答正文，要让它超过门槛。'.repeat(20)}\n${END}\n`;
+  const obs = (at) => ({ ...replyObs(at, { mdCards: 0 }), text: long });
+  let s = initialState();
+  let r = stepPoll(s, obs(2000), cfg({ wantsFile: 'long', longReplyChars: 100, attachGraceMs: 5000 }));
+  r = stepPoll(r.state, obs(2100), cfg({ wantsFile: 'long', longReplyChars: 100, attachGraceMs: 5000 }));
+  assert.equal(r.action, 'continue', '长回复的 chat 要为卡片等一会儿');
+  // 宽限期内卡片出现就立刻结束
+  r = stepPoll(r.state, { ...obs(2500), mdCards: 1 }, cfg({ wantsFile: 'long', longReplyChars: 100, attachGraceMs: 5000 }));
+  assert.equal(r.action, 'finish');
+  assert.equal(r.state.settled.mdCards, 1);
+}
+{
+  // longReplyChars: 0 表示「chat 也一律等」
+  let s = initialState();
+  let r = stepPoll(s, replyObs(2000, { mdCards: 0 }), cfg({ wantsFile: 'long', longReplyChars: 0, attachGraceMs: 5000 }));
+  r = stepPoll(r.state, replyObs(2100, { mdCards: 0 }), cfg({ wantsFile: 'long', longReplyChars: 0, attachGraceMs: 5000 }));
+  assert.equal(r.action, 'continue', '门槛设 0 就是一律等');
+}
+
+// 6b. wantsFile: false 一律不等（关掉文件通道时的行为）
 {
   let s = initialState();
   let r = stepPoll(s, replyObs(2000, { mdCards: 0 }), cfg({ wantsFile: false, attachGraceMs: 5000 }));
   r = stepPoll(r.state, replyObs(2100, { mdCards: 0 }), cfg({ wantsFile: false, attachGraceMs: 5000 }));
-  assert.equal(r.action, 'finish', 'chat 不等卡片');
+  assert.equal(r.action, 'finish', '关掉时不等卡片');
 }
 
 // 7. 没定位到回复气泡时不宽限（拿不到锚点，等也没有意义）

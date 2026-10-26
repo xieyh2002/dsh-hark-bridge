@@ -9,6 +9,20 @@ assert.ok(msg.startsWith(`${startTag(id)} plan`));
 assert.ok(msg.trimEnd().endsWith(footTag(id)));
 assert.ok(!msg.includes(endTag(id)), '发出的消息不能包含结束标记');
 
+// 三种模式都要文件，但措辞不同（0.11）：plan/review 一律走文件，chat 有字数门槛。
+{
+  const plan = buildMessage(id, 'plan', 'x');
+  const review = buildMessage(id, 'review', 'x');
+  const chat = buildMessage(id, 'chat', 'x');
+  assert.match(plan, /请把完整方案写成 \.md 文件/, 'plan 要一律要文件');
+  assert.match(review, /请把完整审查意见写成 \.md 文件/, 'review 要一律要文件');
+  assert.match(chat, /超过 300 字左右/, 'chat 用字数门槛');
+  assert.ok(!chat.includes('请把完整方案写成'), 'chat 不该照搬 plan 的措辞');
+  // 每一条都得说清「做不到要讲」，否则插件分不清「这次不需要文件」和「它忘了」。
+  assert.match(plan, /无法生成文件/);
+  assert.match(chat, /一两句话能说清的直接回正文/);
+}
+
 // 还没发出
 assert.equal(extractReply('hello', id).status, 'not-sent');
 

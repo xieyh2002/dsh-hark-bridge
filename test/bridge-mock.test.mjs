@@ -259,7 +259,7 @@ const baseCfg = {
   // 输入框里只剩一句指路话（消息本身还有协议头与附件清单，所以不按总长度断言，
   // 只确认原始正文没有重复贴进来）
   assert.ok(!ego.state.typed.includes('+ 这一行要原样到 Hark 手里'), '正文不该再重复贴进输入框');
-  assert.match(ego.state.typed, /完整内容已作为附件/, '要说清去看附件');
+  assert.match(ego.state.typed, /已作为附件.*发送，请以附件为准/, '要说清去看附件');
 }
 
 // 5c. 关掉 autoAttachOverflow 时仍然是明确的报错
@@ -274,6 +274,48 @@ const baseCfg = {
     return true;
   });
   assert.equal(ego.state.calls, 0, '关掉开关时不该启动浏览器');
+}
+
+// 5d. 软门槛：正文到了 attachBodyMinChars 就转成附件，不必等到 maxChars
+//
+// 为什么单独要这一档：maxChars 是硬上限，默认 6 万字符——正常的 diff、整份文件
+// 都在它下面，于是「发给 Hark 的尽量用 .md」这条要求实际上从来没生效过。
+{
+  const ws = mkdtempSync(join(TMP_HOME, 'ws-'));
+  const ego = makeFakeEgo();
+  const body = '这是一段需要走文件的正文。\n'.repeat(60); // ~660 字符
+  const bridge = new HarkBridge(
+    () => ({
+      ...baseCfg,
+      harkUrl: 'https://hark.example/p/5d',
+      maxChars: 60000,
+      attachBodyMinChars: 300,
+    }),
+    ego,
+  );
+  const r = await bridge.ask('plan', body, { workspaceRoot: ws });
+  assert.equal(r.done, true);
+  assert.ok(
+    (r.warnings || []).some((w) => /超过 300 字.*已改写成附件/.test(w)),
+    `要说明是因为软门槛转的附件，实际 warnings=${JSON.stringify(r.warnings)}`,
+  );
+  const staged = ego.state.staged.at(-1) || [];
+  assert.equal(staged.length, 1, '软门槛也要真的挂上附件');
+  assert.equal((ego.state.stagedContents.at(-1) || [])[0], body, '附件里必须是完整正文');
+  assert.ok(!ego.state.typed.includes(body.slice(0, 40)), '正文不该再内联一遍');
+}
+
+// 5e. 软门槛设 0 就是关掉：短正文老实内联，不要凭空生成附件
+{
+  const ego = makeFakeEgo();
+  const bridge = new HarkBridge(
+    () => ({ ...baseCfg, harkUrl: 'https://hark.example/p/5e', attachBodyMinChars: 0 }),
+    ego,
+  );
+  const r = await bridge.ask('plan', '给插件加导出功能');
+  assert.equal(r.done, true);
+  assert.ok(!(ego.state.staged.at(-1) || []).length, '关掉之后不该有正文附件');
+  assert.ok(ego.state.typed.includes('给插件加导出功能'), '正文要原样内联');
 }
 
 // 6. 握手失败不能挡住正式请求（Hark 可能早就学会规则了）
