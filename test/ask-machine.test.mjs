@@ -147,6 +147,23 @@ console.log('ask machine tests');
   assert.equal(r.state.settled.mdCards, 1);
 }
 {
+  // chat 里 Hark 按规则把长回答写成了文件：聊天只剩一句「方案见附件 a.md」。
+  //
+  // 这是最容易写反的一处：早期用「正文长度 >= 门槛」判断，可协议要求长回答走文件、
+  // 聊天只留一句指路话，于是**真正有文件时正文恰恰很短** → 不等卡片 → 文件卡片
+  // 晚渲染一点就整份丢掉；反而「没照规则、把长文贴在正文」时才去等一个不存在的文件。
+  // 现在「提到附件」是强信号，长度只兜底。
+  const short = `\n方案见附件 方案.md\n${END}\n`;
+  const obs = (at) => ({ ...replyObs(at, { mdCards: 0 }), text: short });
+  let s = initialState();
+  let r = stepPoll(s, obs(2000), cfg({ wantsFile: 'long', attachGraceMs: 5000 }));
+  r = stepPoll(r.state, obs(2100), cfg({ wantsFile: 'long', attachGraceMs: 5000 }));
+  assert.equal(r.action, 'continue', '正文虽短，但说了「见附件」，就得等卡片');
+  r = stepPoll(r.state, { ...obs(2500), mdCards: 1 }, cfg({ wantsFile: 'long', attachGraceMs: 5000 }));
+  assert.equal(r.action, 'finish');
+  assert.equal(r.state.settled.mdCards, 1);
+}
+{
   // longReplyChars: 0 表示「chat 也一律等」
   let s = initialState();
   let r = stepPoll(s, replyObs(2000, { mdCards: 0 }), cfg({ wantsFile: 'long', longReplyChars: 0, attachGraceMs: 5000 }));

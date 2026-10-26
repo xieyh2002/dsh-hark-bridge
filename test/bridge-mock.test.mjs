@@ -254,8 +254,9 @@ const baseCfg = {
   const staged = ego.state.staged.at(-1) || [];
   assert.equal(staged.length, 1, '应当有一个正文附件');
   assert.match(staged[0], /正文-[a-z0-9]+\.md$/, `附件名应能看出是正文，实际 ${staged[0]}`);
-  const uploaded = (ego.state.stagedContents.at(-1) || [])[0];
-  assert.equal(uploaded, long, '附件里必须是完整正文，不能截断');
+  const uploaded = (ego.state.stagedContents.at(-1) || [])[0] || '';
+  assert.ok(uploaded.startsWith(`<!-- 编号: ${r.id} -->`), `附件第一行要写编号，实际=${uploaded.slice(0, 60)}`);
+  assert.equal(uploaded.slice(uploaded.indexOf('\n\n') + 2), long, '附件里必须是完整正文，不能截断');
   // 输入框里只剩一句指路话（消息本身还有协议头与附件清单，所以不按总长度断言，
   // 只确认原始正文没有重复贴进来）
   assert.ok(!ego.state.typed.includes('+ 这一行要原样到 Hark 手里'), '正文不该再重复贴进输入框');
@@ -301,7 +302,10 @@ const baseCfg = {
   );
   const staged = ego.state.staged.at(-1) || [];
   assert.equal(staged.length, 1, '软门槛也要真的挂上附件');
-  assert.equal((ego.state.stagedContents.at(-1) || [])[0], body, '附件里必须是完整正文');
+  // 附件第一行是编号注释（让 Hark 认得出这份是这次的），正文从第三行开始。
+  const got = (ego.state.stagedContents.at(-1) || [])[0] || '';
+  assert.ok(got.startsWith(`<!-- 编号: ${r.id} -->`), `附件第一行要写编号，实际=${got.slice(0, 60)}`);
+  assert.equal(got.slice(got.indexOf('\n\n') + 2), body, '编号之后必须是完整原文，一个字不能少');
   assert.ok(!ego.state.typed.includes(body.slice(0, 40)), '正文不该再内联一遍');
 }
 
@@ -404,6 +408,10 @@ const baseCfg = {
   assert.equal(r.reply, '方案：\n1. 加 /export 命令');
   assert.ok(r.warnings.some((w) => w.includes('降级')), `warnings 里要有降级说明：${JSON.stringify(r.warnings)}`);
   const last = ego.state.all.at(-1);
+  assert.ok(
+    last.includes('附件没能上传') && last.includes('不必等附件'),
+    `降级这事要让 Hark 知道，否则它可能以为本来就没打算给文件。实际开头=${last.slice(0, 120)}`,
+  );
   assert.ok(last.includes('## 附件 inline-me.js'), '内联正文里要有附件小节');
   assert.ok(last.includes('export const answer = 42;'), '内联正文里要有文件内容');
   assert.equal(ego.state.staged.at(-1).length, 0, '降级那次不能再带附件');
